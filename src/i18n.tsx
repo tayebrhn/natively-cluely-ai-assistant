@@ -100,6 +100,22 @@ const RU: Record<string, string> = {
         'Используйте подписку ChatGPT Plus/Pro как AI-провайдера — API-ключ не нужен.',
     'ChatGPT Account': 'Аккаунт ChatGPT',
     'Sign in with ChatGPT': 'Войти через ChatGPT',
+    // ── OpenCode (HTTP client to a running server) ──
+    'Connect to a running OpenCode server and stream from the model you configured there.':
+        'Подключитесь к запущенному серверу OpenCode и получайте ответы от настроенной там модели.',
+    'Server Base URL': 'Базовый URL сервера',
+    'Model': 'Модель',
+    'Leave blank to use the server\'s default model. Format: provider/model.':
+        'Оставьте пустым, чтобы использовать модель сервера по умолчанию. Формат: provider/model.',
+    'Username (optional)': 'Имя пользователя (необязательно)',
+    'Password (optional)': 'Пароль (необязательно)',
+    'Leave blank to keep current': 'Оставьте пустым, чтобы не менять',
+    'Only needed if your server requires HTTP Basic auth.':
+        'Нужно только если сервер требует HTTP Basic-авторизацию.',
+    'Timeout (ms)': 'Тайм-аут (мс)',
+    'Enable provider': 'Включить провайдера',
+    'Disable provider': 'Отключить провайдера',
+    'OpenCode test failed': 'Проверка OpenCode не удалась',
     'Local Models (Ollama)': 'Локальные модели (Ollama)',
     'Run open-source models locally.': 'Запускайте модели с открытым кодом локально.',
     'Ollama not detected': 'Ollama не обнаружен',

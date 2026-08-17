@@ -592,6 +592,58 @@ interface ElectronAPI {
   codexCliLogout: (config?: any) => Promise<{ success: boolean; action: string; output?: string; error?: string; resolvedPath?: string; config?: any }>;
   codexCliLogin: (config?: any) => Promise<{ success: boolean; action: string; output?: string; error?: string; resolvedPath?: string; config?: any }>;
   codexCliDoctor: (config?: any) => Promise<{ success: boolean; action: string; output?: string; error?: string; resolvedPath?: string; config?: any }>;
+  // OpenCode — HTTP client to a running `opencode serve`. The Basic-auth
+  // password is a secret (write-only from the renderer's perspective): it is
+  // accepted by setOpenCodeConfig/testOpenCode but never returned by
+  // getOpenCodeConfig, which reports only the non-secret config.
+  getOpenCodeConfig: () => Promise<{
+    enabled: boolean;
+    baseUrl: string;
+    username: string;
+    model: string;
+    fastModel: string;
+    timeoutMs: number;
+  }>;
+  setOpenCodeConfig: (config: {
+    enabled: boolean;
+    baseUrl: string;
+    username: string;
+    model: string;
+    fastModel: string;
+    timeoutMs: number;
+    password?: string;
+  }) => Promise<{
+    success: boolean;
+    error?: string;
+    config?: {
+      enabled: boolean;
+      baseUrl: string;
+      username: string;
+      model: string;
+      fastModel: string;
+      timeoutMs: number;
+    };
+  }>;
+  testOpenCode: (config?: {
+    enabled?: boolean;
+    baseUrl?: string;
+    username?: string;
+    model?: string;
+    fastModel?: string;
+    timeoutMs?: number;
+    password?: string;
+  }) => Promise<{
+    success: boolean;
+    error?: string;
+    config?: {
+      enabled: boolean;
+      baseUrl: string;
+      username: string;
+      model: string;
+      fastModel: string;
+      timeoutMs: number;
+    };
+  }>;
   // ChatGPT OAuth IPCs — replace the old `codex login` CLI subprocess flow.
   // startLogin kicks off the PKCE flow + opens the system browser; the
   // renderer listens for codex:login:complete / :failed events to update UI.
@@ -2107,6 +2159,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   codexCliLogout: (config?: any) => ipcRenderer.invoke('codex-cli:logout', config),
   codexCliLogin: (config?: any) => ipcRenderer.invoke('codex-cli:login', config),
   codexCliDoctor: (config?: any) => ipcRenderer.invoke('codex-cli:doctor', config),
+  getOpenCodeConfig: () => ipcRenderer.invoke('get-opencode-config'),
+  setOpenCodeConfig: (config: {
+    enabled: boolean;
+    baseUrl: string;
+    username: string;
+    model: string;
+    fastModel: string;
+    timeoutMs: number;
+    password?: string;
+  }) => ipcRenderer.invoke('set-opencode-config', config),
+  testOpenCode: (config?: {
+    enabled?: boolean;
+    baseUrl?: string;
+    username?: string;
+    model?: string;
+    fastModel?: string;
+    timeoutMs?: number;
+    password?: string;
+  }) => ipcRenderer.invoke('test-opencode', config),
   // ChatGPT OAuth (PKCE) — replaces the old `codex login` CLI subprocess.
   // The renderer listens for `codex:login:complete` / `:failed` /
   // `:signed-out` / `:tokens:refreshed` events for live UI updates.

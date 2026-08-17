@@ -132,6 +132,36 @@ describe('Codex availability uses OAuth state, not only enabled config', () => {
   });
 });
 
+describe('OpenCode availability is not-disabled + enabled + a configured base URL', () => {
+  test('isOpenCodeAvailable gates on the family switch, the enabled flag, and a non-empty baseUrl', () => {
+    const source = read('electron/LLMHelper.ts');
+    const start = source.indexOf('private isOpenCodeAvailable(): boolean');
+    assert.ok(start >= 0, 'isOpenCodeAvailable helper must exist');
+    const block = source.slice(start, source.indexOf('\n  // ---------------------------', start));
+    assert.match(block, /if\s*\(this\.isProviderDisabled\('opencode'\)\)\s*return false/, 'a switched-off OpenCode family must never be available');
+    assert.match(block, /if\s*\(!this\.openCodeConfig\.enabled\)\s*return false/, 'the enable toggle must gate availability');
+    assert.match(block, /return\s*!!\(this\.openCodeConfig\.baseUrl \|\| ''\)\.trim\(\)/, 'a base URL is required — OpenCode is a client of the user\'s own server');
+  });
+
+  test('OpenCode has NO OAuth/signed-in probe (unlike Codex — it is the user\'s local server)', () => {
+    const source = read('electron/LLMHelper.ts');
+    const start = source.indexOf('private isOpenCodeAvailable(): boolean');
+    const block = source.slice(start, source.indexOf('\n  // ---------------------------', start));
+    assert.doesNotMatch(block, /CodexOAuthService|signedIn/, 'OpenCode availability must not depend on any OAuth sign-in state');
+  });
+
+  test('direct OpenCode generation and streaming refuse when disabled or unconfigured', () => {
+    const source = read('electron/LLMHelper.ts');
+    const generate = source.slice(source.indexOf('private async generateWithOpenCode'), source.indexOf('private async *streamWithOpenCode'));
+    const stream = source.slice(source.indexOf('private async *streamWithOpenCode'), source.indexOf('private async *streamWithOpenCode') + 1600);
+    assert.match(generate, /if\s*\(!this\.isOpenCodeAvailable\(\)\)\s*throw new Error\('OpenCode transport is disabled or not configured\.'\)/);
+    assert.match(stream, /if\s*\(!this\.isOpenCodeAvailable\(\)\)\s*throw new Error\('OpenCode transport is disabled or not configured\.'\)/);
+    // The outbound-scope boundary must run BEFORE any byte reaches the server.
+    assert.match(generate, /this\.assertOutboundScopes\('opencode', userContent\)/, 'generateWithOpenCode must assert the outbound boundary');
+    assert.match(stream, /this\.assertOutboundScopes\('opencode', userContent\)/, 'streamWithOpenCode must assert the outbound boundary');
+  });
+});
+
 describe('IPC credential changes synchronize runtime default and Settings UI', () => {
   for (const handlerName of ['set-gemini-api-key', 'set-groq-api-key', 'set-openai-api-key', 'set-claude-api-key', 'set-deepseek-api-key', 'set-litellm-config']) {
     test(`${handlerName} refreshes unavailable default model and broadcasts credential changes when changed`, () => {

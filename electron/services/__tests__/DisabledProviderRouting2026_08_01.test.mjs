@@ -76,7 +76,8 @@ describe('the store id space and the router id space are reconciled', () => {
   test('every provider the router can select has a family mapping', () => {
     const routed = routeLLMProviders({
       capability: 'chat',
-      availability: { hasNatively: true, hasGroq: true, hasCodex: true, hasGemini: true, hasOpenAI: true, hasClaude: true, hasDeepseek: true, hasOllama: true },
+      availability: { hasNatively: true, hasGroq: true, hasCodex: true, hasGemini: true, hasOpenAI: true, hasClaude: true, hasDeepseek: true, hasOllama: true, hasOpencode: true },
+      models: { opencode: 'anthropic/claude-sonnet-4-5' },
     }).map((a) => a.provider);
     const mapped = new Set(Object.values(DISABLED_PROVIDER_FAMILY_MAP).flat());
     for (const p of routed) {
@@ -89,6 +90,15 @@ describe('the store id space and the router id space are reconciled', () => {
     assert.equal(disabledRouterProviders([]).size, 0);
     assert.equal(disabledRouterProviders(undefined).size, 0);
     assert.equal(isProviderFamilyDisabled('openai', undefined), false);
+  });
+
+  test('the single "opencode" id maps straight through to the router\'s "opencode"', () => {
+    // OpenCode uses ONE id in both spaces (no codex-style alias split), so the
+    // store spelling and the router spelling are identical.
+    assert.equal(disabledRouterProviders(['opencode']).has('opencode'), true);
+    assert.equal(isProviderFamilyDisabled('opencode', ['opencode']), true);
+    assert.equal(DISABLED_PROVIDER_FAMILY_MAP.opencode?.includes('opencode'), true,
+      'the family map must route the store id to the router id');
   });
 });
 
@@ -114,6 +124,26 @@ describe('routeLLMProviders honours disabledProviders', () => {
   test('Ollama is NOT exempt from the user\'s own switch', () => {
     const attempts = routeLLMProviders({ ...base, disabledProviders: ['ollama'] });
     assert.equal(attempts.find((a) => a.provider === 'ollama').status, 'unavailable');
+  });
+
+  test('a disabled OpenCode is unavailable with reason "disabled", not "missing_config"', () => {
+    const on = routeLLMProviders({
+      ...base,
+      availability: { ...base.availability, hasOpencode: true },
+      models: { ...base.models, opencode: 'anthropic/claude-sonnet-4-5' },
+    });
+    assert.equal(on.find((a) => a.provider === 'opencode').status, 'available',
+      'precondition: a configured OpenCode is available before the switch');
+
+    const off = routeLLMProviders({
+      ...base,
+      availability: { ...base.availability, hasOpencode: true },
+      models: { ...base.models, opencode: 'anthropic/claude-sonnet-4-5' },
+      disabledProviders: ['opencode'],
+    });
+    const oc = off.find((a) => a.provider === 'opencode');
+    assert.equal(oc.status, 'unavailable');
+    assert.equal(oc.unavailableReason, 'disabled', 'a switched-off OpenCode must not masquerade as a config gap');
   });
 
   test('REGRESSION: with nothing disabled the routing table is byte-identical', () => {

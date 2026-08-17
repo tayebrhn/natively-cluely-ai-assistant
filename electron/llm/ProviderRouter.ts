@@ -1,4 +1,4 @@
-export type LLMProviderId = 'natively' | 'groq' | 'codex' | 'gemini_flash' | 'gemini_pro' | 'openai' | 'claude' | 'deepseek' | 'ollama';
+export type LLMProviderId = 'natively' | 'groq' | 'codex' | 'gemini_flash' | 'gemini_pro' | 'openai' | 'claude' | 'deepseek' | 'ollama' | 'opencode';
 export type ProviderCapability = 'chat' | 'stream_chat' | 'structured' | 'vision';
 export type ProviderAttemptStatus = 'available' | 'unavailable';
 export type ProviderUnavailableReason = 'missing_api_key' | 'missing_config' | 'unsupported_capability' | 'disabled';
@@ -103,6 +103,7 @@ export interface ProviderAvailabilityState {
     hasClaude?: boolean;
     hasDeepseek?: boolean;
     hasOllama?: boolean;
+    hasOpencode?: boolean;
 }
 
 export interface ProviderModelState {
@@ -115,6 +116,7 @@ export interface ProviderModelState {
     claude?: string;
     deepseek?: string;
     ollama?: string;
+    opencode?: string;
 }
 
 export interface ProviderRouteOptions {
@@ -156,6 +158,7 @@ export const DISABLED_PROVIDER_FAMILY_MAP: Readonly<Record<string, readonly LLMP
     claude: ['claude'],
     deepseek: ['deepseek'],
     ollama: ['ollama'],
+    opencode: ['opencode'],
 });
 
 export function disabledRouterProviders(disabled?: readonly string[]): Set<LLMProviderId> {
@@ -312,13 +315,25 @@ export function routeLLMProviders(options: ProviderRouteOptions): ProviderAttemp
         unavailableReason: 'missing_config',
         supports: ['chat', 'stream_chat', 'structured', 'vision'],
     };
+    // OpenCode (client of the user's own `opencode serve`) is text-only in v1 —
+    // no vision declared, so it stays out of the multimodal/screenshot chain
+    // exactly like DeepSeek. 'missing_config' because it's unavailable until the
+    // user configures a reachable server URL (not an API key).
+    const opencode: ProviderSpec = {
+        provider: 'opencode',
+        name: `OpenCode (${models.opencode ?? 'default'})`,
+        model: models.opencode,
+        available: Boolean(availability.hasOpencode),
+        unavailableReason: 'missing_config',
+        supports: ['chat', 'stream_chat', 'structured'],
+    };
 
     // DeepSeek is placed after Claude in the text-only chain (between the existing
     // cloud chat providers and the local Ollama fallback) and is omitted from the
     // multimodal chain since no DeepSeek vision model is supported.
     const orderedSpecs: ProviderSpec[] = options.multimodal
         ? [natively, codex, openai, geminiFlash, claude, geminiPro, groq]
-        : [natively, groq, codex, geminiFlash, geminiPro, openai, claude, deepseek];
+        : [natively, groq, codex, geminiFlash, geminiPro, openai, claude, deepseek, opencode];
 
     if (availability.hasOllama) {
         orderedSpecs.push(ollama);
@@ -453,7 +468,7 @@ export class ProviderRouter {
     constructor(circuitConfig?: Partial<CircuitBreakerConfig>) {
         const config = { ...this.defaultCircuitConfig, ...circuitConfig };
         // Initialize circuit breakers for each provider
-        ['gemini', 'groq', 'openai', 'claude', 'deepseek', 'natively', 'codex'].forEach(provider => {
+        ['gemini', 'groq', 'openai', 'claude', 'deepseek', 'natively', 'codex', 'opencode'].forEach(provider => {
             this.circuitBreakers.set(provider, new CircuitBreaker(provider, config));
         });
     }
@@ -475,7 +490,7 @@ export class ProviderRouter {
 
         // Rule 2: Check circuit breakers and skip unhealthy providers
         const availableProviders = this.filterHealthyProviders(
-            ['gemini', 'groq', 'openai', 'claude', 'deepseek', 'natively', 'codex'],
+            ['gemini', 'groq', 'openai', 'claude', 'deepseek', 'natively', 'codex', 'opencode'],
             health
         );
 
@@ -573,7 +588,8 @@ export class ProviderRouter {
             'claude': 'claude-sonnet-4-6',
             'deepseek': 'deepseek-v4-flash',
             'natively': 'default',
-            'codex': 'default'
+            'codex': 'default',
+            'opencode': 'default'
         };
         return models[provider] || 'default';
     }

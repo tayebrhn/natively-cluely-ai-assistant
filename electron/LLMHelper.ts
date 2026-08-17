@@ -68,6 +68,7 @@ import { promisify } from 'util';
 import axios from 'axios';
 import { createProviderRateLimiters, RateLimiter } from './services/RateLimiter';
 import { CodexCliConfig, CodexCliService, DEFAULT_CODEX_CLI_CONFIG } from './services/CodexCliService';
+import { OpenCodeConfig, OpenCodeService, DEFAULT_OPENCODE_CONFIG } from './services/OpenCodeService';
 const execAsync = promisify(exec);
 const NATIVELY_API_URL = (process.env.NATIVELY_API_URL || 'https://api.natively.software').replace(/\/+$/, '');
 
@@ -388,6 +389,7 @@ export class LLMHelper {
   private activeCurlProvider: CurlProvider | null = null;
   private groqFastTextMode: boolean = false;
   private codexCliConfig: CodexCliConfig = DEFAULT_CODEX_CLI_CONFIG;
+  private openCodeConfig: OpenCodeConfig = DEFAULT_OPENCODE_CONFIG;
   private knowledgeOrchestrator: any = null;
   private negotiationCoachingHandler: ((payload: unknown) => void) | null = null;
   private aiResponseLanguage: string = 'auto';
@@ -660,6 +662,7 @@ export class LLMHelper {
   private static readonly PROVIDER_LABEL_FAMILY: Readonly<Record<string, string>> = {
     gemini: 'gemini', groq: 'groq', natively: 'natively', openai: 'openai',
     claude: 'claude', deepseek: 'deepseek', litellm: 'litellm', codex: 'codex-cli',
+    opencode: 'opencode',
     custom_curl: 'custom', custom_provider: 'custom',
   };
 
@@ -1259,6 +1262,15 @@ export class LLMHelper {
     return this.codexCliConfig;
   }
 
+  public setOpenCodeConfig(config: Partial<OpenCodeConfig>) {
+    this.openCodeConfig = OpenCodeService.normalizeConfig(config);
+    console.log(`[LLMHelper] OpenCode ${this.openCodeConfig.enabled ? 'enabled' : 'disabled'} at ${this.openCodeConfig.baseUrl}${this.openCodeConfig.model ? ` with model: ${this.openCodeConfig.model}` : ' (server default model)'}`);
+  }
+
+  public getOpenCodeConfig(): OpenCodeConfig {
+    return this.openCodeConfig;
+  }
+
   public getAiResponseLanguage(): string {
     return this.aiResponseLanguage;
   }
@@ -1356,6 +1368,20 @@ export class LLMHelper {
     } catch {
       return false;
     }
+  }
+
+  private isOpenCodeCliModel(modelId: string): boolean {
+    return modelId === "opencode" || modelId.startsWith("opencode:");
+  }
+
+  private isOpenCodeAvailable(): boolean {
+    // Router and store share the single family id 'opencode' (no split like
+    // Codex's 'codex'/'codex-cli'). Unlike Codex there is no OAuth/signed-in
+    // probe: OpenCode is the user's own local server, so availability is just
+    // not-disabled + enabled + a configured base URL.
+    if (this.isProviderDisabled('opencode')) return false;
+    if (!this.openCodeConfig.enabled) return false;
+    return !!(this.openCodeConfig.baseUrl || '').trim();
   }
   // ---------------------------
 
@@ -1491,6 +1517,14 @@ export class LLMHelper {
     return this.codexCliConfig.model;
   }
 
+  private getSelectedOpenCodeModel(fastMode: boolean): string {
+    if (fastMode) return this.openCodeConfig.fastModel;
+    if (this.currentModelId.startsWith("opencode:")) {
+      return this.currentModelId.slice("opencode:".length) || this.openCodeConfig.model;
+    }
+    return this.openCodeConfig.model;
+  }
+
   private async generateWithCodexCli(userContent: string, systemPrompt?: string, fastMode = false, imagePaths?: string[], signal?: AbortSignal): Promise<string> {
     if (!this.isCodexAvailable()) throw new Error('Codex CLI transport is disabled or ChatGPT is signed out.');
     // Codex routes to chatgpt.com/backend-api — it is a CLOUD provider, and it
@@ -1555,6 +1589,60 @@ export class LLMHelper {
       sandboxMode: this.codexCliConfig.sandboxMode,
       serviceTier: this.codexCliConfig.serviceTier,
       modelReasoningEffort: this.codexCliConfig.modelReasoningEffort,
+      signal,
+    });
+  }
+
+  // OpenCode is a CLOUD-class provider for boundary purposes: it forwards the
+  // prompt to the user's opencode server, which relays to whatever upstream
+  // (OpenAI/Anthropic/etc.) they configured there. So it takes the same
+  // local-only gate and assertOutboundScopes() every network provider takes.
+  // v1 is TEXT-ONLY: no imagePaths parameter, and it is deliberately absent
+  // from every vision dispatch site (visionPolicy.ts / VisionProviderRegistry).
+  private getOpenCodePassword(): string | undefined {
+    try {
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      return CredentialsManager.getInstance().getOpenCodePassword() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async generateWithOpenCode(userContent: string, systemPrompt?: string, fastMode = false, signal?: AbortSignal): Promise<string> {
+    if (!this.isOpenCodeAvailable()) throw new Error('OpenCode transport is disabled or not configured.');
+    if (this.isLocalOnlyMode) throw new Error("Cloud providers disabled in local-only mode");
+    // Text-only: no imagePaths. The scope check still runs so a future caller
+    // that wires images through this provider trips the boundary instead of
+    // silently leaking a screenshot to the user's opencode server.
+    this.assertOutboundScopes('opencode', userContent);
+    const model = this.getSelectedOpenCodeModel(fastMode);
+    return OpenCodeService.run('', {
+      prompt: userContent,
+      instructions: systemPrompt,
+      baseUrl: this.openCodeConfig.baseUrl,
+      username: this.openCodeConfig.username,
+      password: this.getOpenCodePassword(),
+      model,
+      timeoutMs: this.openCodeConfig.timeoutMs,
+      signal,
+    });
+  }
+
+  private async *streamWithOpenCode(userContent: string, systemPrompt?: string, fastMode = false, signal?: AbortSignal): AsyncGenerator<string, void, unknown> {
+    if (!this.isOpenCodeAvailable()) throw new Error('OpenCode transport is disabled or not configured.');
+    if (this.isLocalOnlyMode) throw new Error("Cloud providers disabled in local-only mode");
+    // Generator: the scope check runs on first next(), still strictly before any
+    // byte reaches OpenCodeService.stream. See generateWithOpenCode.
+    this.assertOutboundScopes('opencode', userContent);
+    const model = this.getSelectedOpenCodeModel(fastMode);
+    yield* OpenCodeService.stream('', {
+      prompt: userContent,
+      instructions: systemPrompt,
+      baseUrl: this.openCodeConfig.baseUrl,
+      username: this.openCodeConfig.username,
+      password: this.getOpenCodePassword(),
+      model,
+      timeoutMs: this.openCodeConfig.timeoutMs,
       signal,
     });
   }
@@ -2287,14 +2375,15 @@ ANSWER DIRECTLY:`;
     const systemPrompt = this.injectLanguageInstruction(basePrompt);
 
     try {
-      if (this.isCodexAvailable()) {
-        // Codex CLI takes priority when available — same precedence as in chat().
+      if (this.isCodexAvailable() || this.isOpenCodeAvailable()) {
+        // Codex CLI / OpenCode take priority when available — same precedence as
+        // in chat(). Either one routes through chatWithGemini's fast path below.
         try {
           const text = await this.chatWithGemini(promptMessage, undefined, suggestionContext, true);
           if (text && text.trim().length > 0) return this.processResponse(text);
-          console.warn('[LLMHelper] Codex CLI suggestion empty, falling back.');
+          console.warn('[LLMHelper] Codex CLI/OpenCode suggestion empty, falling back.');
         } catch (e: any) {
-          console.warn(`[LLMHelper] Codex CLI suggestion failed: ${e.message}. Falling back.`);
+          console.warn(`[LLMHelper] Codex CLI/OpenCode suggestion failed: ${e.message}. Falling back.`);
         }
       }
       if (this.useOllama) {
@@ -2931,18 +3020,29 @@ let isMultimodal = !!(imagePaths?.length);
       // !this.isCodexCliModel(this.currentModelId) prevents fast-mode from
       // overriding an EXPLICITLY-PICKED codex-cli:<model> (which would otherwise
       // call getSelectedCodexCliModel(true) → fastModel → 0 tokens → fallback).
+      // Same reasoning for !this.isOpenCodeCliModel(...) below.
       // Fixes issue #315.
       const fastModeAppliesNS = this.groqFastTextMode && !isMultimodal && (
         this.isCodexAvailable() ||
+        this.isOpenCodeAvailable() ||
         this.isGroqModel(this.currentModelId) ||
         this.currentModelId === 'natively'
-      ) && !this.isCodexCliModel(this.currentModelId);
+      ) && !this.isCodexCliModel(this.currentModelId) && !this.isOpenCodeCliModel(this.currentModelId);
       if (fastModeAppliesNS && this.isCodexAvailable()) {
         console.log(`[LLMHelper] ⚡️ Fast Text Mode Active. Routing to Codex CLI...`);
         try {
           return await this.generateWithCodexCli(cloudUserContent, openaiSystemPrompt, true);
         } catch (e: any) {
           console.warn("[LLMHelper] Codex CLI Fast Text failed, falling back to standard fast routing:", e.message);
+        }
+      }
+
+      if (fastModeAppliesNS && this.isOpenCodeAvailable()) {
+        console.log(`[LLMHelper] ⚡️ Fast Text Mode Active. Routing to OpenCode...`);
+        try {
+          return await this.generateWithOpenCode(cloudUserContent, openaiSystemPrompt, true);
+        } catch (e: any) {
+          console.warn("[LLMHelper] OpenCode Fast Text failed, falling back to standard fast routing:", e.message);
         }
       }
 
@@ -2968,6 +3068,10 @@ let isMultimodal = !!(imagePaths?.length);
 
       if (this.isCodexCliModel(this.currentModelId) && this.isCodexAvailable()) {
         return await this.generateWithCodexCli(cloudUserContent, openaiSystemPrompt, false, cloudImagePaths);
+      }
+
+      if (this.isOpenCodeCliModel(this.currentModelId) && this.isOpenCodeAvailable()) {
+        return await this.generateWithOpenCode(cloudUserContent, openaiSystemPrompt, false);
       }
 
       // `custom` is the family id the Providers panel's "Disable custom
@@ -3068,6 +3172,7 @@ let isMultimodal = !!(imagePaths?.length);
           hasGroq: Boolean(this.groqClient),
           groqDisabled: this._groqLocalDisabled,
           hasCodex: this.isCodexAvailable(),
+          hasOpencode: this.isOpenCodeAvailable(),
           hasGemini: Boolean(this.client),
           hasOpenAI: Boolean(this.openaiClient),
           hasClaude: Boolean(this.claudeClient),
@@ -3077,6 +3182,7 @@ let isMultimodal = !!(imagePaths?.length);
         models: {
           groq: textGroq,
           codex: this.codexCliConfig.model,
+          opencode: this.openCodeConfig.model,
           geminiFlash: textGeminiFlash,
           geminiPro: textGeminiPro,
           openai: textOpenAI,
@@ -3109,6 +3215,10 @@ let isMultimodal = !!(imagePaths?.length);
             break;
           case 'codex':
             providers.push({ name: routedProvider.name, execute: () => this.generateWithCodexCli(cloudUserContent, openaiSystemPrompt, false, cloudIsMultimodal ? cloudImagePaths : undefined) });
+            break;
+          case 'opencode':
+            // Text-only: no image argument, unlike codex above.
+            providers.push({ name: routedProvider.name, execute: () => this.generateWithOpenCode(cloudUserContent, openaiSystemPrompt, false) });
             break;
           case 'gemini_flash':
             providers.push({ name: routedProvider.name, execute: () => this.tryGenerateResponse(cloudCombinedMessages.gemini, cloudIsMultimodal ? cloudImagePaths : undefined, routedProvider.model || textGeminiFlash) });
@@ -3301,6 +3411,16 @@ let isMultimodal = !!(imagePaths?.length);
       providers.push({
         name: `Codex CLI (${this.codexCliConfig.model})`,
         execute: () => this.generateWithCodexCli(message),
+      });
+    }
+
+    // OpenCode (client of the user's own `opencode serve`). Text-only, so it
+    // sits alongside Codex as a structured-extraction fallback. Same latency
+    // caveat as Codex — kept below the Gemini cascade, never first.
+    if (this.isOpenCodeAvailable()) {
+      providers.push({
+        name: `OpenCode (${this.openCodeConfig.model || 'default'})`,
+        execute: () => this.generateWithOpenCode(message),
       });
     }
 
@@ -4744,6 +4864,11 @@ let isMultimodal = !!(imagePaths?.length);
       }
       if (this.isCodexAvailable()) {
         providers.push({ name: `Codex CLI (${this.codexCliConfig.model})`, execute: () => this.streamWithCodexCli(userContent, openaiSystemPrompt, false, undefined, abortSignal) });
+      }
+      // OpenCode is text-only in v1, so it lives ONLY in this text-only branch
+      // (deliberately absent from the multimodal branch above).
+      if (this.isOpenCodeAvailable()) {
+        providers.push({ name: `OpenCode (${this.openCodeConfig.model || 'default'})`, execute: () => this.streamWithOpenCode(userContent, openaiSystemPrompt, false, abortSignal) });
       }
       if (this.openaiClient) {
         providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenai(userContent, openaiSystemPrompt, textOpenAI, abortSignal) });
@@ -6308,9 +6433,10 @@ let isMultimodal = !!(imagePaths?.length);
     // in the UI is silently ignored because fast-mode returns before model routing runs.
     const fastModeApplies = this.groqFastTextMode && !isMultimodal && (
       this.isCodexAvailable() ||
+      this.isOpenCodeAvailable() ||
       this.isGroqModel(this.currentModelId) ||
       this.currentModelId === 'natively'
-    ) && !this.isCodexCliModel(this.currentModelId);
+    ) && !this.isCodexCliModel(this.currentModelId) && !this.isOpenCodeCliModel(this.currentModelId);
     if (fastModeApplies) {
       if (this.isCodexAvailable()) {
         console.log(`[LLMHelper] ⚡️ Fast Text Mode Active (Streaming). Routing to Codex CLI...`);
@@ -6319,6 +6445,15 @@ let isMultimodal = !!(imagePaths?.length);
           return;
         } catch (e: any) {
           console.warn("[LLMHelper] Codex CLI Fast Text streaming failed, falling back:", e.message);
+        }
+      }
+      if (this.isOpenCodeAvailable()) {
+        console.log(`[LLMHelper] ⚡️ Fast Text Mode Active (Streaming). Routing to OpenCode...`);
+        try {
+          yield* this.streamWithOpenCode(userContent, finalSystemPrompt, true, abortSignal);
+          return;
+        } catch (e: any) {
+          console.warn("[LLMHelper] OpenCode Fast Text streaming failed, falling back:", e.message);
         }
       }
       if (this.groqClient && !this._groqLocalDisabled) {
@@ -6362,6 +6497,12 @@ let isMultimodal = !!(imagePaths?.length);
 
     if (this.isCodexCliModel(this.currentModelId) && this.isCodexAvailable()) {
       yield* this.streamWithCodexCli(userContent, finalSystemPrompt, false, imagePaths, abortSignal);
+      return;
+    }
+
+    if (this.isOpenCodeCliModel(this.currentModelId) && this.isOpenCodeAvailable()) {
+      // Text-only: imagePaths deliberately not forwarded.
+      yield* this.streamWithOpenCode(userContent, finalSystemPrompt, false, abortSignal);
       return;
     }
 
@@ -8005,6 +8146,19 @@ let isMultimodal = !!(imagePaths?.length);
     );
   }
 
+  /**
+   * OpenCode is a LOCAL HTTP agent (Natively → user's running `opencode serve`
+   * → upstream provider relay). Session creation + upstream relay can exceed
+   * the 7s cloud first-useful cap, so — like Ollama and Codex CLI — it earns
+   * the longer local first-useful budget rather than being aborted to the
+   * canned fallback. Mirrors isUsingCodexCli().
+   */
+  public isUsingOpenCode(): boolean {
+    return this.isOpenCodeAvailable() && (
+      this.isOpenCodeCliModel(this.currentModelId) || this.groqFastTextMode === true
+    );
+  }
+
   public async getOllamaModels(): Promise<string[]> {
     const baseUrl = (this.ollamaUrl || "http://127.0.0.1:11434").replace('localhost', '127.0.0.1');
 
@@ -8215,9 +8369,10 @@ let isMultimodal = !!(imagePaths?.length);
     }
   }
 
-  public getCurrentProvider(): "ollama" | "gemini" | "custom" | "codex-cli" {
+  public getCurrentProvider(): "ollama" | "gemini" | "custom" | "codex-cli" | "opencode" {
     if (this.customProvider) return "custom";
     if (this.isCodexCliModel(this.currentModelId)) return "codex-cli";
+    if (this.isOpenCodeCliModel(this.currentModelId)) return "opencode";
     return this.useOllama ? "ollama" : "gemini";
   }
 
@@ -8653,6 +8808,24 @@ let isMultimodal = !!(imagePaths?.length);
         }
       } catch (e: any) {
         console.warn(`[LLMHelper] ⚠️ Codex CLI summary failed: ${e.message}. Falling back...`);
+      }
+    }
+
+    // ATTEMPT 2b: OpenCode (if user has it enabled and configured — text-only path)
+    if (this.isOpenCodeAvailable()) {
+      console.log(`[LLMHelper] Attempting OpenCode for summary...`);
+      try {
+        const text = await this.withTimeout(
+          this.generateWithOpenCode(`Context:\n${context}`, systemPrompt),
+          Math.max(this.openCodeConfig.timeoutMs, 60000),
+          'OpenCode Summary'
+        );
+        if (text.trim().length > 0) {
+          console.log(`[LLMHelper] ✅ OpenCode summary generated successfully.`);
+          return this.processResponse(text);
+        }
+      } catch (e: any) {
+        console.warn(`[LLMHelper] ⚠️ OpenCode summary failed: ${e.message}. Falling back...`);
       }
     }
 

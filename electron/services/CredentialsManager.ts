@@ -57,6 +57,14 @@ export interface StoredCredentials {
     litellmBaseURL?: string;
     /** Manual output ceiling for LiteLLM-proxied models. Unset → Auto (per-model via /model/info). */
     litellmMaxTokens?: number;
+    /**
+     * Optional HTTP Basic-auth password for the user's `opencode serve` instance
+     * (set via OPENCODE_SERVER_PASSWORD on their server). Secret → stored here
+     * (encrypted via safeStorage), NOT in SettingsManager. The non-secret half
+     * (base URL, username, model) lives in AppSettings. Absent → the server is
+     * unauthenticated and no Authorization header is sent.
+     */
+    openCodePassword?: string;
     googleServiceAccountPath?: string;
     customProviders?: CustomProvider[];
     curlProviders?: CurlProvider[];
@@ -359,6 +367,10 @@ export class CredentialsManager {
         return this.credentials.litellmBaseURL;
     }
 
+    public getOpenCodePassword(): string | undefined {
+        return this.credentials.openCodePassword;
+    }
+
     public getLitellmMaxTokens(): number | undefined {
         return this.credentials.litellmMaxTokens;
     }
@@ -655,6 +667,20 @@ export class CredentialsManager {
         this.credentials.litellmMaxTokens = Number.isFinite(mt) && mt > 0 ? Math.floor(mt) : undefined;
         this.saveCredentials();
         console.log('[CredentialsManager] LiteLLM config updated');
+    }
+
+    /**
+     * Set (or clear) the OpenCode server's Basic-auth password. Returns
+     * saveCredentials()'s boolean so the IPC layer can surface a real error
+     * instead of a false "Saved" while the store is degraded. Empty/whitespace
+     * normalizes to `undefined` so the key is absent from persisted JSON rather
+     * than present-and-empty (matches the STT/service-account setters).
+     */
+    public setOpenCodePassword(password: string): boolean {
+        if (this.refuseWriteWhileDegraded('set opencode password')) return false;
+        const trimmed = (password || '').trim();
+        this.credentials.openCodePassword = trimmed || undefined;
+        return this.saveCredentials();
     }
 
     /**

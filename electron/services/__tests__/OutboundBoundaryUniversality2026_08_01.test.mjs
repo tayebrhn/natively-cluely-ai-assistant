@@ -128,6 +128,13 @@ function helper() {
   };
   h.isCodexAvailable = () => false;
   h.codexCliConfig = { path: '/nonexistent/codex', model: 'm', fastModel: 'fm', timeoutMs: 1000 };
+  // OpenCode is consulted by the same structured/streaming cascades as Codex.
+  // A bare Object.create() prototype skips the field initializer that would set
+  // openCodeConfig on a real instance, so — exactly as with codexCliConfig
+  // above — stub the availability method AND seed the config the direct field
+  // reads use, or isOpenCodeAvailable() dereferences undefined.
+  h.isOpenCodeAvailable = () => false;
+  h.openCodeConfig = { enabled: false, baseUrl: '', username: 'opencode', model: '', fastModel: '', timeoutMs: 120000 };
   h.customProvider = null;
   h.activeCurlProvider = null;
 
@@ -566,6 +573,44 @@ describe('DEFECT 3 — the `custom` family toggle reaches the boundary', () => {
     const out = await LLMHelper.prototype.generateContentStructured.call(h, 'a question');
     assert.equal(used, true, 'the custom rung must exist when enabled, or the negative test above is vacuous');
     assert.equal(out, 'custom-ok');
+  });
+});
+
+// ── DEFECT 1 (new provider) — OpenCode has no client getter, so the boundary
+//    is its ONLY structural guard, exactly like Codex and the custom family ──
+
+describe('OpenCode (no client getter) is refused at the boundary when switched off', () => {
+  // OpenCode's HTTP client is constructed inside OpenCodeService, not exposed as
+  // a gated `get openCodeClient()` on LLMHelper. So — as with codex/custom — the
+  // client-getter guard that stops the streaming cascade for gemini/openai/etc.
+  // does not exist here; assertOutboundScopes('opencode', …) is the whole seatbelt.
+  test('BASELINE: with OpenCode enabled the boundary lets a text turn through', () => {
+    setCreds({ disabled: [] });
+    const { h } = helper();
+    // No throw: a text-only send to an enabled OpenCode server is allowed.
+    LLMHelper.prototype.assertOutboundScopes.call(h, 'opencode', 'transcript text');
+  });
+
+  test('the family id the UI writes (`opencode`) is refused at the boundary when off', () => {
+    setCreds({ disabled: ['opencode'] });
+    const { h } = helper();
+    assert.throws(
+      () => LLMHelper.prototype.assertOutboundScopes.call(h, 'opencode', 'transcript text'),
+      (e) => e?.name === 'ProviderDisabledError' && /opencode/.test(e?.message ?? ''),
+      'LEAK: user data still reached the OpenCode server after the family was switched off',
+    );
+  });
+
+  test('the screenshots scope is enforced for OpenCode too (text-only v1 → images denied)', () => {
+    // OpenCode is text-only in v1: it is not a vision destination, so a caller
+    // that mistakenly hands it screenshots must be blocked before transport.
+    setScopes({ screenshots: false });
+    const { h } = helper();
+    assert.throws(
+      () => LLMHelper.prototype.assertOutboundScopes.call(h, 'opencode', 'q', [IMG]),
+      (e) => e?.name === 'ProviderScopeError' || e?.name === 'VisionPolicyError',
+      'a denied screenshot must not be serialized toward the OpenCode server',
+    );
   });
 });
 

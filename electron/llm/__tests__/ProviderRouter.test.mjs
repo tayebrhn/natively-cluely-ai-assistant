@@ -27,6 +27,7 @@ test('routeLLMProviders returns deterministic text fallback order with availabil
       hasOpenAI: true,
       hasClaude: true,
       hasDeepseek: true,
+      hasOpencode: true,
     },
     models: {
       groq: 'groq-text',
@@ -36,9 +37,12 @@ test('routeLLMProviders returns deterministic text fallback order with availabil
       openai: 'openai-text',
       claude: 'claude-text',
       deepseek: 'deepseek-v4-flash',
+      opencode: 'anthropic/claude-sonnet-4-5',
     },
   });
 
+  // OpenCode is the text-only tail of the chain (after DeepSeek), mirroring how
+  // it is appended in orderedSpecs. It is intentionally absent from multimodal.
   assert.deepEqual(attempts.map(attempt => attempt.provider), [
     'natively',
     'groq',
@@ -48,6 +52,7 @@ test('routeLLMProviders returns deterministic text fallback order with availabil
     'openai',
     'claude',
     'deepseek',
+    'opencode',
   ]);
   assert.equal(attempts.every(attempt => attempt.status === 'available'), true);
   assert.deepEqual(attempts.map(attempt => attempt.provider), attempts.map(attempt => attempt.provider));
@@ -70,6 +75,49 @@ test('routeLLMProviders omits DeepSeek from multimodal fallback (text-only provi
 
   assert.equal(attempts.find(a => a.provider === 'deepseek'), undefined,
     'DeepSeek must not appear in the multimodal/vision fallback chain');
+});
+
+test('routeLLMProviders omits OpenCode from multimodal fallback (text-only in v1)', async () => {
+  const attempts = await route({
+    capability: 'chat',
+    multimodal: true,
+    availability: {
+      hasNatively: true,
+      hasGemini: true,
+      hasOpenAI: true,
+      hasClaude: true,
+      hasOpencode: true,
+    },
+    models: {
+      opencode: 'anthropic/claude-sonnet-4-5',
+    },
+  });
+
+  assert.equal(attempts.find(a => a.provider === 'opencode'), undefined,
+    'OpenCode is text-only in v1 and must not appear in the multimodal/vision fallback chain');
+});
+
+test('routeLLMProviders marks OpenCode available when configured, missing_config otherwise', async () => {
+  const configured = await route({
+    capability: 'chat',
+    multimodal: false,
+    availability: { hasOpencode: true },
+    models: { opencode: 'anthropic/claude-sonnet-4-5' },
+  });
+  const okc = configured.find(a => a.provider === 'opencode');
+  assert.ok(okc, 'OpenCode must appear in the text-only attempts list');
+  assert.equal(okc.status, 'available');
+
+  const absent = await route({
+    capability: 'chat',
+    multimodal: false,
+    availability: { hasOpencode: false },
+  });
+  const missing = absent.find(a => a.provider === 'opencode');
+  assert.ok(missing, 'OpenCode must still appear (as unavailable) when not configured');
+  assert.equal(missing.status, 'unavailable');
+  // Not a missing API key — OpenCode needs a baseUrl + enabled toggle, hence a config gap.
+  assert.equal(missing.unavailableReason, 'missing_config');
 });
 
 test('routeLLMProviders marks DeepSeek missing_api_key when key absent', async () => {
@@ -124,12 +172,14 @@ test('routeLLMProviders marks missing providers unavailable with reasons', async
     },
   });
 
-  // 7 prior providers + deepseek
-  assert.equal(attempts.length, 8);
+  // 7 prior providers + deepseek + opencode (text-only tail)
+  assert.equal(attempts.length, 9);
   assert.equal(attempts.every(attempt => attempt.status === 'unavailable'), true);
   assert.equal(attempts.find(attempt => attempt.provider === 'codex').unavailableReason, 'missing_config');
   assert.equal(attempts.find(attempt => attempt.provider === 'openai').unavailableReason, 'missing_api_key');
   assert.equal(attempts.find(attempt => attempt.provider === 'deepseek').unavailableReason, 'missing_api_key');
+  // OpenCode reports a config gap (no baseUrl / not enabled), not a missing API key.
+  assert.equal(attempts.find(attempt => attempt.provider === 'opencode').unavailableReason, 'missing_config');
 });
 
 test('routeLLMProviders reports disabled Groq distinctly from missing key', async () => {

@@ -48,4 +48,17 @@ describe('AIProvidersSettings credential synchronization', () => {
     assert.match(source, /setLitellmBaseURL\(creds\.litellmBaseURL \|\| ''\)/, 'base URL should clear when creds no longer contain LiteLLM config');
     assert.match(source, /setLitellmMaxTokens\(creds\.litellmMaxTokens \? String\(creds\.litellmMaxTokens\) : ''\)/, 'max tokens should clear when proxy is removed');
   });
+
+  test('OpenCode active-model options require the enable toggle AND a configured base URL', () => {
+    // Parallel to the Codex readiness gate above: OpenCode contributes model
+    // options only when the user has switched it on and given it a server URL.
+    // Unlike Codex there is no OAuth term — OpenCode is the user's own server.
+    assert.match(source, /const\s+isOpenCodeReady\s*=\s*openCodeConfig\.enabled\s*&&\s*!!openCodeConfig\.baseUrl\.trim\(\)/, 'OpenCode readiness should be enabled && a non-empty base URL');
+    assert.match(source, /if\s*\(isOpenCodeReady\s*&&\s*isProviderEnabled\('opencode'\)\)\s*\{[\s\S]*?OPENCODE_MODEL/, 'OpenCode model options should only be added when ready and the family is enabled');
+    assert.doesNotMatch(source, /openCodeConfig\.enabled\s*\|\|\s*openCodeConfig\.baseUrl/, 'an OR gate would surface options for an enabled-but-URL-less server');
+    assert.match(source, /const\s+handleToggleOpenCode\s*=\s*async[\s\S]*?saveOpenCodeConfig\(\s*\{\s*\.\.\.openCodeConfig,\s*enabled\s*\}\s*\)[\s\S]*?handleToggleProvider\('opencode',\s*enabled\)/,
+      'the visible OpenCode switch must update both runtime enablement gates');
+    assert.match(source, /checked=\{openCodeConfig\.enabled\s*&&\s*!disabledProviders\.includes\('opencode'\)\}/,
+      'the visible OpenCode switch must reflect config enablement and the provider-family gate');
+  });
 });

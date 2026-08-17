@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ChevronDown, Check, Cloud, Terminal, Monitor, Server, Plus } from 'lucide-react';
-import { getCodexCliModelDisplayName, STANDARD_CLOUD_MODELS, prettifyModelId } from '../../utils/modelUtils';
+import { getCodexCliModelDisplayName, getOpenCodeModelDisplayName, STANDARD_CLOUD_MODELS, prettifyModelId } from '../../utils/modelUtils';
 import { useT } from '../../i18n';
 
 interface ModelSelectorProps {
@@ -87,6 +87,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({ currentModel, onSe
     const getModelDisplayName = (model: string) => {
         const codexCliName = getCodexCliModelDisplayName(model);
         if (codexCliName) return codexCliName;
+        const openCodeName = getOpenCodeModelDisplayName(model);
+        if (openCodeName) return openCodeName;
         if (model.startsWith('ollama-')) return model.replace('ollama-', '');
         if (model === 'gemini-3.6-flash') return 'Gemini 3.6 Flash';
         if (model === 'gemini-3.1-flash-lite') return 'Gemini 3.1 Flash Lite';

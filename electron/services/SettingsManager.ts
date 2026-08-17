@@ -33,6 +33,19 @@ export interface AppSettings {
     // xhigh on gpt-5.3-codex is silently downgraded). 'none' means "don't pass
     // -c model_reasoning_effort at all" — distinct from omitting the setting.
     codexCliModelReasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+    // OpenCode provider — Natively is an HTTP client of the user's own running
+    // `opencode serve` instance (opencode.ai, by SST). These are all non-secret
+    // (URL / username / model ids / timeout); the optional Basic-auth PASSWORD is
+    // a secret and lives in CredentialsManager (keytar), never here. Defaults are
+    // applied at the read sites via DEFAULT_OPENCODE_CONFIG (see OpenCodeService).
+    openCodeEnabled?: boolean;
+    openCodeBaseUrl?: string;
+    openCodeUsername?: string;
+    // Model as `providerID/modelID` (e.g. "anthropic/claude-3-5-sonnet-20241022").
+    // Empty → OpenCode uses the model its own default agent is configured with.
+    openCodeModel?: string;
+    openCodeFastModel?: string;
+    openCodeTimeoutMs?: number;
     // Hindsight long-term memory server (optional, user-provisioned sidecar — Cloud OR
     // local). baseUrl empty by default → feature off. Env (HINDSIGHT_BASE_URL) overrides
     // these for dev. apiKey only for Hindsight Cloud. autoStart/serverCommand reserved for

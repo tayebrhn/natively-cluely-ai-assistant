@@ -1968,6 +1968,14 @@ export class AppState {
         serviceTier: settingsManager.get('codexCliServiceTier') || 'default',
         modelReasoningEffort: settingsManager.get('codexCliModelReasoningEffort'),
       });
+      llmHelper.setOpenCodeConfig({
+        enabled: !!settingsManager.get('openCodeEnabled'),
+        baseUrl: settingsManager.get('openCodeBaseUrl') || 'http://127.0.0.1:4096',
+        username: settingsManager.get('openCodeUsername') || 'opencode',
+        model: settingsManager.get('openCodeModel') || '',
+        fastModel: settingsManager.get('openCodeFastModel') || '',
+        timeoutMs: settingsManager.get('openCodeTimeoutMs') || 120_000,
+      });
     }
 
     // Initialize RAGManager (requires database to be ready)

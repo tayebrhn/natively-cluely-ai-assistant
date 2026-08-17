@@ -9,6 +9,7 @@ import { AudioDevices } from './audio/AudioDevices';
 import { DatabaseManager } from './db/DatabaseManager'; // Import Database Manager
 import { AppState } from './main';
 import { CodexCliService, isCodexAuthError } from './services/CodexCliService';
+import { OpenCodeService } from './services/OpenCodeService';
 import { describeServiceAccountRejection } from './services/googleServiceAccount';
 import { PhoneMirrorService } from './services/PhoneMirrorService';
 import { sanitizeContextEnvelope } from './services/browser-context/sanitize';
@@ -189,6 +190,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const providerFamily = (modelId: string): string => {
         if (modelId === 'natively') return 'natively';
         if (modelId.startsWith('codex-cli')) return 'codex-cli';
+        if (modelId === 'opencode' || modelId.startsWith('opencode:')) return 'opencode';
         if (modelId.startsWith('litellm/')) return 'litellm';
         if (modelId.startsWith('ollama-')) return 'ollama';
         if (modelId.startsWith('gemini-') || modelId.startsWith('models/')) return 'gemini';
@@ -3336,7 +3338,8 @@ export function initializeIpcHandlers(appState: AppState): void {
           // local generation aborted to zero tokens and the user saw the canned
           // fallback line below. Codex CLI shares the cold-load profile
           // (subprocess spawn → codex CLI loads the model → first delta).
-          const usingLocalLlm = llmHelper.isUsingOllama() || llmHelper.isUsingCodexCli();
+          // OpenCode shares it too (session create + upstream relay latency).
+          const usingLocalLlm = llmHelper.isUsingOllama() || llmHelper.isUsingCodexCli() || llmHelper.isUsingOpenCode();
           let manualFirstUseful = false;
           let manualSuperseded = false;
           await raceStreamWithDeadline({
@@ -8438,6 +8441,90 @@ export function initializeIpcHandlers(appState: AppState): void {
       };
     } catch (error: any) {
       return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('get-opencode-config', () => {
+    try {
+      const llmHelper = appState.processingHelper.getLLMHelper();
+      return llmHelper.getOpenCodeConfig();
+    } catch {
+      return OpenCodeService.normalizeConfig({});
+    }
+  });
+
+  safeHandle('set-opencode-config', (_, config: any) => {
+    try {
+      const incoming = config || {};
+      const normalized = OpenCodeService.normalizeConfig(incoming);
+      const sm = SettingsManager.getInstance();
+      sm.set('openCodeEnabled', normalized.enabled);
+      sm.set('openCodeBaseUrl', normalized.baseUrl);
+      sm.set('openCodeUsername', normalized.username);
+      sm.set('openCodeModel', normalized.model);
+      sm.set('openCodeFastModel', normalized.fastModel);
+      sm.set('openCodeTimeoutMs', normalized.timeoutMs);
+      // The Basic-auth password is a secret: it goes to CredentialsManager
+      // (keytar/safeStorage), never to plain settings. Only write it when the
+      // renderer actually sent one — undefined means "leave the stored password
+      // unchanged", an empty string means "clear it".
+      if (typeof incoming.password === 'string') {
+        const { CredentialsManager } = require('./services/CredentialsManager');
+        CredentialsManager.getInstance().setOpenCodePassword(incoming.password);
+      }
+      appState.processingHelper.getLLMHelper().setOpenCodeConfig(normalized);
+      return { success: true, config: normalized };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle('test-opencode', async (_, config?: any) => {
+    try {
+      const current = appState.processingHelper.getLLMHelper().getOpenCodeConfig();
+      const normalized = OpenCodeService.normalizeConfig({ ...current, ...(config || {}) });
+      const baseUrl = (normalized.baseUrl || '').trim().replace(/\/+$/, '');
+      if (!baseUrl) {
+        return { success: false, error: 'OpenCode server URL is not configured.' };
+      }
+      // Prefer a freshly-typed password from the renderer; fall back to the
+      // stored secret. Never echo the value back to the caller.
+      let password: string | undefined;
+      if (config && typeof config.password === 'string' && config.password.length > 0) {
+        password = config.password;
+      } else {
+        try {
+          const { CredentialsManager } = require('./services/CredentialsManager');
+          password = CredentialsManager.getInstance().getOpenCodePassword() || undefined;
+        } catch { /* keytar unavailable — probe without auth */ }
+      }
+      const headers: Record<string, string> = {};
+      if (password) {
+        const token = Buffer.from(`${normalized.username || 'opencode'}:${password}`).toString('base64');
+        headers['Authorization'] = `Basic ${token}`;
+      }
+      // Reachability probe: /doc is the OpenAPI spec endpoint every opencode
+      // server exposes — a cheap, side-effect-free GET. 2xx means the server is
+      // up and (when a password is required) auth succeeded. Pure fetch, no
+      // platform branches — identical on macOS and Windows.
+      const resp = await fetch(`${baseUrl}/doc`, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (resp.status === 401 || resp.status === 403) {
+        return { success: false, error: 'Authentication failed. Check the OpenCode username and password.', config: normalized };
+      }
+      if (!resp.ok) {
+        return { success: false, error: `OpenCode server responded ${resp.status}.`, config: normalized };
+      }
+      return { success: true, config: normalized };
+    } catch (error: any) {
+      const timedOut = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+      const message = timedOut
+        ? 'Could not reach the OpenCode server (timed out). Make sure `opencode serve` is running and the URL is correct.'
+        : (error?.message || 'Could not reach the OpenCode server.');
+      return { success: false, error: message };
     }
   });
 

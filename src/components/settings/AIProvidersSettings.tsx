@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useT } from '../../i18n';
 import { Plus, Trash2, Edit2, AlertCircle, Save, ChevronDown, Check, RefreshCw, ExternalLink, Loader2, LogOut, Cloud, Server, Eye, Info, MessageSquare, Image, FileText, User, Boxes, ClipboardList, Laptop } from 'lucide-react';
-import { CODEX_CLI_MODEL, CODEX_CLI_MODEL_PRESETS, codexCliSelectorId, isModelAllowed, isOptInModelProvider, litellmModelLabel, STANDARD_CLOUD_MODELS, prettifyModelId } from '../../utils/modelUtils';
+import { CODEX_CLI_MODEL, CODEX_CLI_MODEL_PRESETS, codexCliSelectorId, isModelAllowed, isOptInModelProvider, litellmModelLabel, OPENCODE_MODEL, OPENCODE_MODEL_PRESETS, openCodeSelectorId, STANDARD_CLOUD_MODELS, prettifyModelId } from '../../utils/modelUtils';
 import { validateCurl } from '../../lib/curl-validator';
 import { ProviderCard } from './ProviderCard';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -1025,6 +1025,7 @@ export const AIP_PROVIDER_BRANDS: Record<string, { mono: string; brand: string }
     claude:   { mono: 'CL', brand: '#D97757' },
     deepseek: { mono: 'DS', brand: '#4D6BFE' },
     codex:    { mono: 'CX', brand: '#10A37F' },
+    opencode: { mono: 'OC', brand: '#111827' },
     litellm:  { mono: 'LL', brand: '#8B5CF6' },
     ollama:   { mono: 'OL', brand: '#9CA3AF' },
 };
@@ -1930,6 +1931,15 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsProps> = ({
     const [codexAuthStatus, setCodexAuthStatus] = useState<'idle' | 'success' | 'error'>('idle');
     const [codexAuthMessage, setCodexAuthMessage] = useState('');
 
+    // --- OpenCode (HTTP client to a running `opencode serve`) ---
+    // The Basic-auth password is a secret: it is never returned by
+    // getOpenCodeConfig, so the field starts blank and is only sent when the
+    // user types one. An empty password on save means "clear it".
+    const [openCodeConfig, setOpenCodeConfig] = useState({ enabled: false, baseUrl: 'http://127.0.0.1:4096', username: 'opencode', model: '', fastModel: '', timeoutMs: 120000 });
+    const [openCodePassword, setOpenCodePassword] = useState('');
+    const [openCodeStatus, setOpenCodeStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+    const [openCodeError, setOpenCodeError] = useState('');
+
     // --- ChatGPT OAuth (new — replaces `codex login` CLI subprocess) ---
     // The OAuth flow runs entirely in the main process; the renderer just
     // kicks it off and listens for IPC events. We keep the auth state
@@ -2071,6 +2081,12 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsProps> = ({
                 const cliConfig = await window.electronAPI?.getCodexCliConfig?.();
                 if (cliConfig) setCodexCliConfig(cliConfig as typeof codexCliConfig);
 
+                // OpenCode client config (Base URL / model / auth username). The
+                // Basic-auth password is write-only and never returned here.
+                // @ts-ignore
+                const ocConfig = await window.electronAPI?.getOpenCodeConfig?.();
+                if (ocConfig) setOpenCodeConfig(ocConfig as typeof openCodeConfig);
+
                 // Codex OAuth status — read once on mount so the Settings UI
                 // shows the right state without waiting for a user click.
                 // @ts-ignore
@@ -2133,6 +2149,9 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsProps> = ({
     }, []);
 
     const isCodexReady = codexCliConfig.enabled && codexOauthStatus.signedIn;
+
+    // OpenCode has no OAuth step — "ready" is just enabled + a Base URL set.
+    const isOpenCodeReady = openCodeConfig.enabled && !!openCodeConfig.baseUrl.trim();
 
     // Mirrors modelAvailable() in ipcHandlers.ts. Both surfaces must agree: this
     // one decides what the user can pick, that one decides what routing will
@@ -2212,6 +2231,24 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsProps> = ({
                 }
             });
         }
+        if (isOpenCodeReady && isProviderEnabled('opencode')) {
+            // Bare `opencode` id routes to whatever model the server config names.
+            // Its label reflects the configured `provider/model` when one is set.
+            opts.push({
+                id: OPENCODE_MODEL.id,
+                name: openCodeConfig.model
+                    ? `${OPENCODE_MODEL.name} (${prettifyModelId(openCodeConfig.model.split('/').pop() || openCodeConfig.model)})`
+                    : OPENCODE_MODEL.name,
+            });
+            // Illustrative presets — OpenCode has no fixed catalogue, so these are
+            // convenience picks; any `provider/model` the server accepts works.
+            OPENCODE_MODEL_PRESETS.forEach(model => {
+                const id = openCodeSelectorId(model.id);
+                if (!opts.find(o => o.id === id)) {
+                    opts.push({ id, name: `${OPENCODE_MODEL.name}: ${model.name}` });
+                }
+            });
+        }
         if (hasStoredKey.litellm && isProviderEnabled('litellm')) {
             // Same allow-list gate the cloud providers get above. Without it the proxy's
             // full catalogue reaches the picker while modelAvailable() filters it, and
@@ -2242,7 +2279,7 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsProps> = ({
         const next = opts[0].id;
         setDefaultModel(next);
         window.electronAPI?.setDefaultModel?.(next).catch(console.error);
-    }, [credentialsLoaded, defaultModel, hasStoredKey, preferredModels, isCodexReady, codexCliConfig.model, customProviders, ollamaModels, litellmModels, disabledProviders, cloudEnabledModels]);
+    }, [credentialsLoaded, defaultModel, hasStoredKey, preferredModels, isCodexReady, codexCliConfig.model, isOpenCodeReady, openCodeConfig.model, customProviders, ollamaModels, litellmModels, disabledProviders, cloudEnabledModels]);
 
     // Load LiteLLM model IDs only when the proxy is configured. The active-model
     // selector should not expose stale `litellm/...` choices after the proxy is
@@ -2676,6 +2713,58 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsProps> = ({
         } catch (e: any) {
             setCodexCliStatus('error');
             setCodexCliError(e.message || t('Codex CLI test failed'));
+        }
+    };
+
+    const saveOpenCodeConfig = async (next = openCodeConfig) => {
+        const normalized = {
+            ...next,
+            baseUrl: next.baseUrl.trim() || 'http://127.0.0.1:4096',
+            username: next.username.trim() || 'opencode',
+            timeoutMs: Number(next.timeoutMs) || 120000,
+        };
+        setOpenCodeConfig(normalized);
+        // The password is a keytar secret handled separately from the config. Send
+        // it only when the user typed one this session — an empty field must leave
+        // the stored secret untouched, never clobber it with a blank.
+        const payload = openCodePassword.trim()
+            ? { ...normalized, password: openCodePassword }
+            : normalized;
+        const result = await window.electronAPI?.setOpenCodeConfig?.(payload);
+        if (result?.config) setOpenCodeConfig(result.config as typeof openCodeConfig);
+        return result;
+    };
+
+    const handleToggleOpenCode = async () => {
+        const enabled = !(openCodeConfig.enabled && !disabledProviders.includes('opencode'));
+        const result = await saveOpenCodeConfig({ ...openCodeConfig, enabled });
+        if (result?.success) {
+            await handleToggleProvider('opencode', enabled);
+        }
+    };
+
+    const handleTestOpenCode = async () => {
+        setOpenCodeStatus('testing');
+        setOpenCodeError('');
+        try {
+            const saveResult = await saveOpenCodeConfig();
+            const configToTest = saveResult?.config || openCodeConfig;
+            // Include the just-typed password so a first-time test can authenticate
+            // before the secret round-trips through the store.
+            const payload = openCodePassword.trim()
+                ? { ...configToTest, password: openCodePassword }
+                : configToTest;
+            const result = await window.electronAPI?.testOpenCode?.(payload);
+            if (result?.success) {
+                setOpenCodeStatus('success');
+                setTimeout(() => setOpenCodeStatus('idle'), 3000);
+            } else {
+                setOpenCodeStatus('error');
+                setOpenCodeError(result?.error || t('OpenCode test failed'));
+            }
+        } catch (e: any) {
+            setOpenCodeStatus('error');
+            setOpenCodeError(e.message || t('OpenCode test failed'));
         }
     };
 
@@ -3474,6 +3563,116 @@ export const AIProvidersSettings: React.FC<AIProvidersSettingsProps> = ({
                             </div>
                         </>
                     )}
+                </div>
+            </div>
+
+            {/* OpenCode — HTTP client to a running `opencode serve` */}
+            <div className="space-y-5">
+                <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                        <AipProviderMark provider="opencode" name="OpenCode" className="mt-0.5" />
+                        <div className="min-w-0">
+                        <h3 className="text-sm font-bold aip-hero mb-1">OpenCode</h3>
+                        <p className="text-xs aip-muted">{t('Connect to a running OpenCode server and stream from the model you configured there.')}</p>
+                        </div>
+                    </div>
+                    <AipSwitch
+                        checked={openCodeConfig.enabled && !disabledProviders.includes('opencode')}
+                        onChange={handleToggleOpenCode}
+                        label={`${openCodeConfig.enabled && !disabledProviders.includes('opencode') ? t('Disable') : t('Enable')} OpenCode`}
+                        title={openCodeConfig.enabled && !disabledProviders.includes('opencode') ? t('Disable provider') : t('Enable provider')}
+                    />
+                </div>
+
+                <div className="aip-card p-5 space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label className="space-y-1 block min-w-0">
+                            <span className="aip-label">{t('Server Base URL')}</span>
+                            <input
+                                value={openCodeConfig.baseUrl}
+                                onChange={e => setOpenCodeConfig(prev => ({ ...prev, baseUrl: e.target.value }))}
+                                onBlur={() => saveOpenCodeConfig()}
+                                data-mono="true"
+                                className="aip-input"
+                                placeholder="http://127.0.0.1:4096"
+                            />
+                        </label>
+                        <label className="space-y-1 block min-w-0">
+                            <span className="aip-label">{t('Model')}</span>
+                            <input
+                                value={openCodeConfig.model}
+                                onChange={e => setOpenCodeConfig(prev => ({ ...prev, model: e.target.value }))}
+                                onBlur={() => saveOpenCodeConfig()}
+                                data-mono="true"
+                                className="aip-input"
+                                placeholder="anthropic/claude-sonnet-4-5"
+                            />
+                            <p className="aip-meta">{t('Leave blank to use the server\'s default model. Format: provider/model.')}</p>
+                        </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <label className="space-y-1 block min-w-0">
+                            <span className="aip-label">{t('Username (optional)')}</span>
+                            <input
+                                value={openCodeConfig.username}
+                                onChange={e => setOpenCodeConfig(prev => ({ ...prev, username: e.target.value }))}
+                                onBlur={() => saveOpenCodeConfig()}
+                                data-mono="true"
+                                className="aip-input"
+                                placeholder="opencode"
+                            />
+                        </label>
+                        <label className="space-y-1 block min-w-0">
+                            <span className="aip-label">{t('Password (optional)')}</span>
+                            <input
+                                type="password"
+                                value={openCodePassword}
+                                onChange={e => setOpenCodePassword(e.target.value)}
+                                onBlur={() => saveOpenCodeConfig()}
+                                data-mono="true"
+                                className="aip-input"
+                                placeholder={t('Leave blank to keep current')}
+                                autoComplete="new-password"
+                            />
+                            <p className="aip-meta">{t('Only needed if your server requires HTTP Basic auth.')}</p>
+                        </label>
+                    </div>
+
+                    <div className="flex items-end justify-between gap-4 mt-1">
+                        <label className="space-y-1 block min-w-0">
+                            <span className="aip-label">{t('Timeout (ms)')}</span>
+                            <input
+                                type="number"
+                                value={openCodeConfig.timeoutMs}
+                                onChange={e => setOpenCodeConfig(prev => ({ ...prev, timeoutMs: Number(e.target.value) }))}
+                                onBlur={() => saveOpenCodeConfig()}
+                                data-mono="true"
+                                className="aip-input"
+                                min={1000}
+                            />
+                            {openCodeStatus === 'error' && openCodeError && (
+                                <p className="text-[10px] aip-danger-fg mt-1">{openCodeError}</p>
+                            )}
+                        </label>
+                        <button
+                            type="button"
+                            onClick={handleTestOpenCode}
+                            disabled={openCodeStatus === 'testing'}
+                            className="aip-btn shrink-0 min-w-[124px]"
+                            data-tone={openCodeStatus === 'success' ? 'ok' : openCodeStatus === 'error' ? 'danger' : undefined}
+                        >
+                            {openCodeStatus === 'testing' ? (
+                                <><Loader2 size={12} strokeWidth={1.75} className="aip-spinner" /> {t('Testing…')}</>
+                            ) : openCodeStatus === 'success' ? (
+                                <><Check size={12} strokeWidth={2} className="aip-check" /> {t('Passed')}</>
+                            ) : openCodeStatus === 'error' ? (
+                                <><AlertCircle size={12} strokeWidth={1.75} /> {t('Failed')}</>
+                            ) : (
+                                t('Test Connection')
+                            )}
+                        </button>
+                    </div>
                 </div>
             </div>
 

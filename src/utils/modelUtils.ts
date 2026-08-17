@@ -66,6 +66,38 @@ export const getCodexCliModelDisplayName = (id: string): string | null => {
     return preset?.name || prettifyModelId(modelId);
 };
 
+export const OPENCODE_MODEL = {
+    id: 'opencode',
+    name: 'OpenCode',
+    desc: 'Runs against your local OpenCode server',
+};
+
+// OpenCode consumes whatever provider you configured inside it, so unlike Codex
+// there is no fixed catalogue. These are common `providerID/modelID` values
+// shown as convenience suggestions; any string the user's server accepts works.
+export const OPENCODE_MODEL_PRESETS = [
+    { id: 'anthropic/claude-sonnet-4-5', name: 'Claude Sonnet 4.5 (Anthropic)' },
+    { id: 'openai/gpt-5.4', name: 'GPT-5.4 (OpenAI)' },
+    { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro (Google)' },
+];
+
+export const openCodeSelectorId = (modelId: string): string => `opencode:${modelId}`;
+
+export const getOpenCodeModelDisplayName = (id: string): string | null => {
+    if (id === OPENCODE_MODEL.id) return OPENCODE_MODEL.name;
+    if (!id.startsWith('opencode:')) return null;
+
+    const modelId = id.slice('opencode:'.length);
+    if (!modelId) return OPENCODE_MODEL.name;
+    const preset = OPENCODE_MODEL_PRESETS.find(model => model.id === modelId);
+    if (preset) return preset.name;
+    // `provider/model` → prettify only the model segment so the slash-form id
+    // still reads cleanly (e.g. "anthropic/claude-sonnet-4-5" → "Claude Sonnet 4 5").
+    const slash = modelId.lastIndexOf('/');
+    const tail = slash >= 0 ? modelId.slice(slash + 1) : modelId;
+    return prettifyModelId(tail);
+};
+
 export const prettifyModelId = (id: string): string => {
     if (!id) return '';
     return id.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());

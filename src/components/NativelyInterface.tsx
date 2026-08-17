@@ -315,7 +315,7 @@ import {
 } from '../lib/overlayAppearance';
 import { NegotiationCoachingCard } from '../premium';
 import type { DynamicActionPayload } from '../types/electron';
-import { getCodexCliModelDisplayName, litellmModelLabel } from '../utils/modelUtils';
+import { getCodexCliModelDisplayName, getOpenCodeModelDisplayName, litellmModelLabel } from '../utils/modelUtils';
 import { getModifierSymbol, isMac, isWindows } from '../utils/platformUtils';
 import { DynamicActionBar } from './dynamic-actions/DynamicActionBar';
 import GlassEffectLayer from './ui/GlassEffectLayer';
@@ -753,6 +753,8 @@ interface MessageRowProps {
 }
 const formatProviderLabel = (provider?: string | null): string => {
   if (!provider) return 'not set';
+  // Preserve the vendor's own casing where the generic title-case would mangle it.
+  if (provider === 'opencode') return 'OpenCode';
   return provider
     .split(/[-_\s]+/)
     .filter(Boolean)
@@ -8621,6 +8623,8 @@ Provide only the answer, nothing else.`;
                           const m = currentModel;
                           const codexCliName = getCodexCliModelDisplayName(m);
                           if (codexCliName) return codexCliName;
+                          const openCodeName = getOpenCodeModelDisplayName(m);
+                          if (openCodeName) return openCodeName;
                           if (m.startsWith('ollama-')) return m.replace('ollama-', '');
                           // LiteLLM ids carry two prefixes — ours and the proxy's
                           // upstream — so the raw id reads `litellm/openai/gpt-4o`.

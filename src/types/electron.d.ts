@@ -133,7 +133,7 @@ export interface ElectronAPI {
   onOpenSettingsTab: (callback: (tab: string) => void) => () => void
 
   // LLM Model Management
-  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "gemini" | "custom" | "codex-cli"; /** @deprecated use `modelId` for selection, `displayName` for UI */ model: string; modelId: string; displayName: string; isOllama: boolean }>
+  getCurrentLlmConfig: () => Promise<{ provider: "ollama" | "gemini" | "custom" | "codex-cli" | "opencode"; /** @deprecated use `modelId` for selection, `displayName` for UI */ model: string; modelId: string; displayName: string; isOllama: boolean }>
   getAvailableOllamaModels: () => Promise<string[]>
   /** Whether a denied data scope would actually be handled on-device. */
   getLocalFallbackStatus: () => Promise<{ text: boolean; vision: boolean }>
@@ -433,6 +433,9 @@ export interface ElectronAPI {
   codexCliLogout: (config?: any) => Promise<{ success: boolean; action: string; output?: string; error?: string; resolvedPath?: string; config?: any }>;
   codexCliLogin: (config?: any) => Promise<{ success: boolean; action: string; output?: string; error?: string; resolvedPath?: string; config?: any }>;
   codexCliDoctor: (config?: any) => Promise<{ success: boolean; action: string; output?: string; error?: string; resolvedPath?: string; config?: any }>;
+  getOpenCodeConfig: () => Promise<{ enabled: boolean; baseUrl: string; username: string; model: string; fastModel: string; timeoutMs: number }>;
+  setOpenCodeConfig: (config: { enabled: boolean; baseUrl: string; username: string; model: string; fastModel: string; timeoutMs: number; password?: string }) => Promise<{ success: boolean; error?: string; config?: { enabled: boolean; baseUrl: string; username: string; model: string; fastModel: string; timeoutMs: number } }>;
+  testOpenCode: (config?: { enabled?: boolean; baseUrl?: string; username?: string; model?: string; fastModel?: string; timeoutMs?: number; password?: string }) => Promise<{ success: boolean; error?: string; config?: { enabled: boolean; baseUrl: string; username: string; model: string; fastModel: string; timeoutMs: number } }>;
   // ChatGPT OAuth (PKCE) — replaces the old `codex login` CLI subprocess.
   codexLoginStatus: () => Promise<{ success: boolean; signedIn: boolean; email?: string; expiresAt?: number; error?: string }>;
   codexStartLogin: () => Promise<{ success: boolean; email?: string; expiresAt?: number; error?: string }>;

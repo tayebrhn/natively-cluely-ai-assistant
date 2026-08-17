@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Check, Loader2 } from 'lucide-react';
-import { CODEX_CLI_MODEL, CODEX_CLI_MODEL_PRESETS, codexCliSelectorId, getCodexCliModelDisplayName, isModelAllowed, litellmModelLabel, STANDARD_CLOUD_MODELS, prettifyModelId } from '../utils/modelUtils';
+import { CODEX_CLI_MODEL, CODEX_CLI_MODEL_PRESETS, codexCliSelectorId, getCodexCliModelDisplayName, OPENCODE_MODEL, OPENCODE_MODEL_PRESETS, openCodeSelectorId, getOpenCodeModelDisplayName, isModelAllowed, litellmModelLabel, STANDARD_CLOUD_MODELS, prettifyModelId } from '../utils/modelUtils';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { getMeetingInterfaceTheme, type MeetingInterfaceTheme } from '../lib/meetingInterfaceTheme';
 import {
@@ -15,7 +15,7 @@ import {
 interface ModelOption {
     id: string;
     name: string;
-    type: 'cloud' | 'local' | 'custom' | 'ollama' | 'codex-cli';
+    type: 'cloud' | 'local' | 'custom' | 'ollama' | 'codex-cli' | 'opencode';
     provider?: string;
 }
 
@@ -119,6 +119,9 @@ const ModelSelectorWindow = () => {
                 // 3. Codex CLI
                 const codexCliConfig = await window.electronAPI?.getCodexCliConfig?.();
 
+                // 3b. OpenCode (HTTP client to a running server)
+                const openCodeConfig = await window.electronAPI?.getOpenCodeConfig?.();
+
                 // 4. Ollama
                 let ollamaModels: string[] = [];
                 try {
@@ -183,6 +186,19 @@ const ModelSelectorWindow = () => {
                     CODEX_CLI_MODEL_PRESETS.forEach(model => {
                         const id = codexCliSelectorId(model.id);
                         models.push({ id, name: getCodexCliModelDisplayName(id) || model.name, type: 'codex-cli', provider: 'codex-cli' });
+                    });
+                }
+
+                // OpenCode — client to a running server. "Ready" here is just
+                // enabled + a Base URL; there is no OAuth step (unlike Codex).
+                if (openCodeConfig?.enabled && openCodeConfig.baseUrl) {
+                    const bare = openCodeConfig.model
+                        ? `${OPENCODE_MODEL.name} (${prettifyModelId(openCodeConfig.model.split('/').pop() || openCodeConfig.model)})`
+                        : OPENCODE_MODEL.name;
+                    models.push({ id: OPENCODE_MODEL.id, name: bare, type: 'opencode', provider: 'opencode' });
+                    OPENCODE_MODEL_PRESETS.forEach(model => {
+                        const id = openCodeSelectorId(model.id);
+                        models.push({ id, name: getOpenCodeModelDisplayName(id) || model.name, type: 'opencode', provider: 'opencode' });
                     });
                 }
 
