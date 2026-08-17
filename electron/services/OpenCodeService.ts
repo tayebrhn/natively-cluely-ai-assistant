@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 /**
  * OpenCodeService — HTTP client for a running `opencode serve` instance.
  *
@@ -35,7 +37,9 @@
  * Wire schema (pinned against the generated SDK types, sst/opencode
  * packages/sdk/js/src/gen/types.gen.ts):
  *   - Prompt body: { system, tools: {'*': false}, model?, parts: [{ type:'text', text }] }
- *   - Stream event: type='message.part.updated', properties={ part: Part, delta?: string }
+ *   - Message event: type='message.updated', properties={ info: Message }
+ *   - Stream events: 'message.part.updated' (full part / legacy delta) and
+ *     'message.part.delta' (current incremental event)
  *   - Text part:    part.type='text', part.text: string, part.sessionID, part.id
  *   - Terminal:     type='session.idle' (properties.sessionID); 'session.error' → throw
  *   - Sync reply:   POST /session/:id/message → { info: AssistantMessage, parts: Part[] }
@@ -225,7 +229,8 @@ export class OpenCodeService {
 
       // 2) Fire the prompt without waiting for the full turn (204 No Content).
       //    prompt_async lets the reply arrive as bus events.
-      const body = buildPromptBody(options);
+      const userMessageId = `msg_${randomUUID()}`;
+      const body = buildPromptBody(options, userMessageId);
       const promptResp = await fetch(`${base}/session/${encodeURIComponent(sessionId)}/prompt_async`, {
         method: 'POST',
         headers,
@@ -240,7 +245,9 @@ export class OpenCodeService {
       // 3) Read events, yield text-part deltas for OUR session, stop on idle.
       const decoder = new TextDecoder('utf-8');
       let buffer = '';
-      const partState: PartDeltaState = { mode: Object.create(null), len: Object.create(null) };
+      const partState: PartDeltaState = { text: Object.create(null) };
+      const messageEligibility = new Map<string, boolean>();
+      const pendingPartEvents = new Map<string, Array<{ type: string; props: any }>>();
 
       while (true) {
         if (combined.signal.aborted) throw new Error('OpenCode request aborted.');
@@ -262,9 +269,31 @@ export class OpenCodeService {
           const type = json?.type;
           const props = json?.properties ?? {};
 
-          if (type === 'message.part.updated') {
-            if (!belongsToSession(props?.part, sessionId)) continue;
-            const delta = extractPartDelta(props, partState);
+          if (type === 'message.updated') {
+            const info = props?.info;
+            if (!info || (info.sessionID ?? info.sessionId) !== sessionId || typeof info.id !== 'string') continue;
+            const eligible = info.role === 'assistant' && info.parentID === userMessageId;
+            messageEligibility.set(info.id, eligible);
+            const pending = pendingPartEvents.get(info.id) || [];
+            pendingPartEvents.delete(info.id);
+            if (!eligible) continue;
+            for (const event of pending) {
+              const delta = extractStreamText(event.type, event.props, partState);
+              if (delta) { resetDeadline(); yield delta; }
+            }
+            continue;
+          }
+          if (type === 'message.part.updated' || type === 'message.part.delta') {
+            const messageId = getPartEventMessageId(type, props);
+            if (!messageId || !partEventBelongsToSession(type, props, sessionId)) continue;
+            if (!messageEligibility.has(messageId)) {
+              const pending = pendingPartEvents.get(messageId) || [];
+              pending.push({ type, props });
+              pendingPartEvents.set(messageId, pending);
+              continue;
+            }
+            if (!messageEligibility.get(messageId)) continue;
+            const delta = extractStreamText(type, props, partState);
             if (delta) { resetDeadline(); yield delta; }
             continue;
           }
@@ -377,7 +406,7 @@ function splitModel(model?: string): { providerID: string; modelID: string } | u
 }
 
 /** Build the prompt request body shared by /message and /prompt_async. */
-function buildPromptBody(options: OpenCodeRunOptions): Record<string, unknown> {
+function buildPromptBody(options: OpenCodeRunOptions, messageId?: string): Record<string, unknown> {
   const instructions = options.instructions?.trim();
   const body: Record<string, unknown> = {
     system: instructions
@@ -389,6 +418,7 @@ function buildPromptBody(options: OpenCodeRunOptions): Record<string, unknown> {
     tools: { '*': false },
     parts: [{ type: 'text', text: options.prompt }],
   };
+  if (messageId) body.messageID = messageId;
   const model = splitModel(options.model);
   if (model) body.model = model;
   return body;
@@ -439,20 +469,19 @@ async function deleteSession(base: string, headers: Record<string, string>, sess
   await fetch(`${base}/session/${encodeURIComponent(sessionId)}`, { method: 'DELETE', headers });
 }
 
-interface PartDeltaState {
-  // Per-part strategy, chosen from the first update seen for that part:
-  //   'delta' → the server sends incremental `properties.delta` strings
-  //   'diff'  → the server sends the full `part.text` each update; we emit the suffix
-  mode: Record<string, 'delta' | 'diff'>;
-  len: Record<string, number>;
+interface PartDeltaState { text: Record<string, string>; }
+
+function getPartEventMessageId(type: string, props: any): string {
+  const id = type === 'message.part.delta'
+    ? props?.messageID ?? props?.messageId
+    : props?.part?.messageID ?? props?.part?.messageId;
+  return typeof id === 'string' ? id : '';
 }
 
-/** True when a Part belongs to `sessionId` (or carries no sessionID, in which
- *  case we don't filter — a throwaway session per call means no cross-talk). */
-function belongsToSession(part: any, sessionId: string): boolean {
-  if (!part || part.type !== 'text') return false;
-  const sid = part.sessionID ?? part.sessionId;
-  return !sid || sid === sessionId;
+function partEventBelongsToSession(type: string, props: any, sessionId: string): boolean {
+  const source = type === 'message.part.delta' ? props : props?.part;
+  const sid = source?.sessionID ?? source?.sessionId;
+  return sid === sessionId;
 }
 
 function matchesSession(props: any, sessionId: string): boolean {
@@ -460,25 +489,27 @@ function matchesSession(props: any, sessionId: string): boolean {
   return !sid || sid === sessionId;
 }
 
-/** Extract the incremental text to emit from a `message.part.updated` event. */
-function extractPartDelta(props: any, state: PartDeltaState): string {
-  const part = props?.part;
-  if (!part || part.type !== 'text') return '';
-  const id = String(part.id ?? 'default');
-  const full = typeof part.text === 'string' ? part.text : '';
-  const hasDelta = typeof props.delta === 'string';
+/** Extract text from both the generated SDK's legacy event and current event-v2. */
+function extractStreamText(type: string, props: any, state: PartDeltaState): string {
+  if (type === 'message.part.delta') {
+    if (props?.field !== 'text' || typeof props?.delta !== 'string') return '';
+    const key = `${getPartEventMessageId(type, props)}:${String(props?.partID ?? props?.partId ?? 'default')}`;
+    state.text[key] = (state.text[key] || '') + props.delta;
+    return props.delta;
+  }
 
-  if (state.mode[id] === undefined) {
-    state.mode[id] = hasDelta ? 'delta' : 'diff';
+  const part = props?.part;
+  if (!part || part.type !== 'text' || part.ignored === true) return '';
+  const key = `${getPartEventMessageId(type, props)}:${String(part.id ?? 'default')}`;
+  const full = typeof part.text === 'string' ? part.text : '';
+  const previous = state.text[key] || '';
+  if (typeof props.delta === 'string') {
+    state.text[key] = full || previous + props.delta;
+    return props.delta;
   }
-  if (state.mode[id] === 'delta') {
-    return hasDelta ? props.delta : '';
-  }
-  // diff mode: emit the newly-appended suffix of the full text.
-  const prev = state.len[id] || 0;
-  if (full.length > prev) {
-    state.len[id] = full.length;
-    return full.slice(prev);
+  state.text[key] = full;
+  if (full.startsWith(previous)) {
+    return full.slice(previous.length);
   }
   return '';
 }

@@ -85,6 +85,21 @@ function sseResponse(events, status = 200) {
   return new Response(stream, { status, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
+/** Delay event creation until after prompt_async has been called. The production
+ * client opens GET /event first, then submits the prompt with its messageID. */
+function deferredSseResponse(makeEvents) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      setImmediate(() => {
+        for (const event of makeEvents()) controller.enqueue(encoder.encode(event));
+        controller.close();
+      });
+    },
+  });
+  return new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+}
+
 function sseFrame(obj) {
   return `data: ${JSON.stringify(obj)}\n\n`;
 }
@@ -316,15 +331,19 @@ test('Basic-auth header present only when a password is set', async () => {
 // =============================================================================
 
 test('stream: yields incremental text in delta mode, stops on session.idle', async () => {
-  const events = [
-    sseFrame({ type: 'server.connected', properties: {} }),
-    sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', sessionID: 'sess-s', text: 'Hello ' }, delta: 'Hello ' } }),
-    sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', sessionID: 'sess-s', text: 'Hello world' }, delta: 'world' } }),
-    sseFrame({ type: 'session.idle', properties: { sessionID: 'sess-s' } }),
-  ];
   const stub = installFetch((call) => {
     if (call.url === `${BASE}/session` && call.method === 'POST') return jsonResponse({ id: 'sess-s' });
-    if (call.url === `${BASE}/event` && call.method === 'GET') return sseResponse(events);
+    if (call.url === `${BASE}/event` && call.method === 'GET') return deferredSseResponse(() => {
+      const prompt = stub.calls.find(c => c.url.includes('/prompt_async'));
+      const userID = JSON.parse(prompt.body).messageID;
+      return [
+        sseFrame({ type: 'server.connected', properties: {} }),
+        sseFrame({ type: 'message.updated', properties: { info: { id: 'assistant-1', sessionID: 'sess-s', role: 'assistant', parentID: userID } } }),
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', messageID: 'assistant-1', sessionID: 'sess-s', text: 'Hello ' }, delta: 'Hello ' } }),
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', messageID: 'assistant-1', sessionID: 'sess-s', text: 'Hello world' }, delta: 'world' } }),
+        sseFrame({ type: 'session.idle', properties: { sessionID: 'sess-s' } }),
+      ];
+    });
     if (call.url.includes('/prompt_async')) return jsonResponse({ ok: true });
     if (call.method === 'DELETE') return jsonResponse({ ok: true });
     throw new Error(`unexpected ${call.method} ${call.url}`);
@@ -337,6 +356,7 @@ test('stream: yields incremental text in delta mode, stops on session.idle', asy
     assert.ok(prompt, 'stream() must POST to /prompt_async');
     const body = JSON.parse(prompt.body);
     assert.deepEqual(body.parts, [{ type: 'text', text: 'hi' }]);
+    assert.match(body.messageID, /^msg_/, 'streaming prompts need a correlatable OpenCode message ID');
     assert.match(body.system, /general-purpose conversational AI assistant/);
     assert.deepEqual(body.tools, { '*': false }, 'streaming requests must disable all coding tools too');
     await flushMicrotasks();
@@ -346,15 +366,19 @@ test('stream: yields incremental text in delta mode, stops on session.idle', asy
 });
 
 test('stream: diff mode — server sends full part.text each update, service emits the suffix', async () => {
-  const events = [
-    // No `delta` field → the service infers diff mode and emits the appended tail.
-    sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', sessionID: 'sess-d', text: 'Hello ' } } }),
-    sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', sessionID: 'sess-d', text: 'Hello world' } } }),
-    sseFrame({ type: 'session.idle', properties: { sessionID: 'sess-d' } }),
-  ];
   const stub = installFetch((call) => {
     if (call.url === `${BASE}/session` && call.method === 'POST') return jsonResponse({ id: 'sess-d' });
-    if (call.url === `${BASE}/event` && call.method === 'GET') return sseResponse(events);
+    if (call.url === `${BASE}/event` && call.method === 'GET') return deferredSseResponse(() => {
+      const prompt = stub.calls.find(c => c.url.includes('/prompt_async'));
+      const userID = JSON.parse(prompt.body).messageID;
+      return [
+        sseFrame({ type: 'message.updated', properties: { info: { id: 'assistant-d', sessionID: 'sess-d', role: 'assistant', parentID: userID } } }),
+        // No `delta` field: emit only the appended tail of each full update.
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', messageID: 'assistant-d', sessionID: 'sess-d', text: 'Hello ' } } }),
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p1', messageID: 'assistant-d', sessionID: 'sess-d', text: 'Hello world' } } }),
+        sseFrame({ type: 'session.idle', properties: { sessionID: 'sess-d' } }),
+      ];
+    });
     if (call.url.includes('/prompt_async')) return jsonResponse({ ok: true });
     if (call.method === 'DELETE') return jsonResponse({ ok: true });
     throw new Error(`unexpected ${call.method} ${call.url}`);
@@ -364,6 +388,59 @@ test('stream: diff mode — server sends full part.text each update, service emi
     assert.equal(out.join(''), 'Hello world');
     assert.deepEqual(out, ['Hello ', 'world'], 'diff mode must emit only the newly-appended suffix');
     await flushMicrotasks();
+  } finally {
+    stub.restore();
+  }
+});
+
+test('stream: excludes the submitted user prompt and emits only its assistant reply', async () => {
+  const stub = installFetch((call) => {
+    if (call.url === `${BASE}/session` && call.method === 'POST') return jsonResponse({ id: 'sess-role' });
+    if (call.url === `${BASE}/event` && call.method === 'GET') return deferredSseResponse(() => {
+      const prompt = stub.calls.find(c => c.url.includes('/prompt_async'));
+      const userID = JSON.parse(prompt.body).messageID;
+      return [
+        sseFrame({ type: 'message.updated', properties: { info: { id: userID, sessionID: 'sess-role', role: 'user' } } }),
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'user-part', messageID: userID, sessionID: 'sess-role', text: '# Question\n\nhello' } } }),
+        sseFrame({ type: 'message.updated', properties: { info: { id: 'assistant-role', sessionID: 'sess-role', role: 'assistant', parentID: userID } } }),
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'assistant-part', messageID: 'assistant-role', sessionID: 'sess-role', text: 'Hello! How can I help?' } } }),
+        sseFrame({ type: 'session.idle', properties: { sessionID: 'sess-role' } }),
+      ];
+    });
+    if (call.url.includes('/prompt_async')) return jsonResponse({ ok: true });
+    if (call.method === 'DELETE') return jsonResponse({ ok: true });
+    throw new Error(`unexpected ${call.method} ${call.url}`);
+  });
+  try {
+    const out = await drain(OpenCodeService.stream('', { prompt: '# Question\n\nhello', baseUrl: BASE, timeoutMs: 5_000 }));
+    assert.deepEqual(out, ['Hello! How can I help?']);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('stream: supports message.part.delta without duplicating the final full part', async () => {
+  const stub = installFetch((call) => {
+    if (call.url === `${BASE}/session` && call.method === 'POST') return jsonResponse({ id: 'sess-v2' });
+    if (call.url === `${BASE}/event` && call.method === 'GET') return deferredSseResponse(() => {
+      const prompt = stub.calls.find(c => c.url.includes('/prompt_async'));
+      const userID = JSON.parse(prompt.body).messageID;
+      return [
+        sseFrame({ type: 'message.updated', properties: { info: { id: 'assistant-v2', sessionID: 'sess-v2', role: 'assistant', parentID: userID } } }),
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p-v2', messageID: 'assistant-v2', sessionID: 'sess-v2', text: '' } } }),
+        sseFrame({ type: 'message.part.delta', properties: { sessionID: 'sess-v2', messageID: 'assistant-v2', partID: 'p-v2', field: 'text', delta: 'Hello ' } }),
+        sseFrame({ type: 'message.part.delta', properties: { sessionID: 'sess-v2', messageID: 'assistant-v2', partID: 'p-v2', field: 'text', delta: 'world' } }),
+        sseFrame({ type: 'message.part.updated', properties: { part: { type: 'text', id: 'p-v2', messageID: 'assistant-v2', sessionID: 'sess-v2', text: 'Hello world' } } }),
+        sseFrame({ type: 'session.idle', properties: { sessionID: 'sess-v2' } }),
+      ];
+    });
+    if (call.url.includes('/prompt_async')) return jsonResponse({ ok: true });
+    if (call.method === 'DELETE') return jsonResponse({ ok: true });
+    throw new Error(`unexpected ${call.method} ${call.url}`);
+  });
+  try {
+    const out = await drain(OpenCodeService.stream('', { prompt: 'hi', baseUrl: BASE, timeoutMs: 5_000 }));
+    assert.deepEqual(out, ['Hello ', 'world']);
   } finally {
     stub.restore();
   }
