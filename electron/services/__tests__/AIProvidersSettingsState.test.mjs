@@ -22,7 +22,9 @@ describe('AIProvidersSettings credential synchronization', () => {
 
   test('Codex active-model and fast-mode options require enabled config AND signed-in OAuth', () => {
     assert.match(source, /const\s+isCodexReady\s*=\s*codexCliConfig\.enabled\s*&&\s*codexOauthStatus\.signedIn/, 'Codex readiness should be signedIn && enabled');
-    assert.match(source, /if\s*\(isCodexReady\)\s*\{[\s\S]*?CODEX_CLI_MODEL/, 'Codex model options should only be added when ready');
+    // The opt-in model-list work (70b22932) further gates the Codex options on
+    // the per-family allow-list toggle; the readiness term must still lead.
+    assert.match(source, /if\s*\(isCodexReady\s*&&\s*isProviderEnabled\('codex-cli'\)\)\s*\{[\s\S]*?CODEX_CLI_MODEL/, 'Codex model options should only be added when ready and the family is enabled');
     assert.doesNotMatch(source, /codexOauthStatus\.signedIn\s*\|\|\s*codexCliConfig\.enabled/, 'old signedIn || enabled availability check must not return');
     assert.match(source, /hasStoredKey\.groq \|\| hasStoredKey\.natively \|\| \(codexCliConfig\.enabled && codexOauthStatus\.signedIn\)/, 'fast mode should not be enabled by a signed-out Codex flag');
   });
