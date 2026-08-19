@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
  * TWO TRANSPORTS, reliability-first:
  *   - streamViaEvents(): subscribe to `GET /event` (SSE bus), fire the prompt
  *     with `POST /session/:id/prompt_async`, and yield assistant text as
- *     `message.part.updated` events arrive; terminate on `session.idle`. This
+ *     assistant text-part events arrive; terminate on `session.idle`. This
  *     is the progressive-UI path.
  *   - runViaMessage(): `POST /session/:id/message`, which blocks until the
  *     assistant turn is complete and returns `{ info, parts }`; we extract the
@@ -40,6 +40,7 @@ import { randomUUID } from 'node:crypto';
  *   - Message event: type='message.updated', properties={ info: Message }
  *   - Stream events: 'message.part.updated' (full part / legacy delta) and
  *     'message.part.delta' (current incremental event)
+ *   - File part:    { type:'file', mime, filename?, url:'data:image/...;base64,...' }
  *   - Text part:    part.type='text', part.text: string, part.sessionID, part.id
  *   - Terminal:     type='session.idle' (properties.sessionID); 'session.error' → throw
  *   - Sync reply:   POST /session/:id/message → { info: AssistantMessage, parts: Part[] }
@@ -84,6 +85,9 @@ export interface OpenCodeRunOptions {
   prompt: string;
   /** Optional task-specific system prompt, appended to the chat-only identity. */
   instructions?: string;
+  /** Provider-ready image parts. Filesystem validation and optimization happen
+   *  in LLMHelper before these data URLs cross the transport boundary. */
+  images?: Array<{ mime: string; url: string; filename?: string }>;
   /** Per-call overrides sourced from OpenCodeConfig + CredentialsManager by the
    *  caller. The service is intentionally decoupled from settings/keytar so it
    *  can be unit-tested with plain values. */
@@ -408,6 +412,16 @@ function splitModel(model?: string): { providerID: string; modelID: string } | u
 /** Build the prompt request body shared by /message and /prompt_async. */
 function buildPromptBody(options: OpenCodeRunOptions, messageId?: string): Record<string, unknown> {
   const instructions = options.instructions?.trim();
+  const parts: Array<Record<string, unknown>> = [{ type: 'text', text: options.prompt }];
+  for (const image of options.images || []) {
+    if (!image?.mime?.startsWith('image/') || !image.url?.startsWith('data:image/')) continue;
+    parts.push({
+      type: 'file',
+      mime: image.mime,
+      ...(image.filename ? { filename: image.filename } : {}),
+      url: image.url,
+    });
+  }
   const body: Record<string, unknown> = {
     system: instructions
       ? `${OPENCODE_CHAT_SYSTEM_PROMPT}\n\n${instructions}`
@@ -416,7 +430,7 @@ function buildPromptBody(options: OpenCodeRunOptions, messageId?: string): Recor
     // The wildcard deny overrides agent permissions and strips every tool from
     // the model request, including tools added by future OpenCode versions.
     tools: { '*': false },
-    parts: [{ type: 'text', text: options.prompt }],
+    parts,
   };
   if (messageId) body.messageID = messageId;
   const model = splitModel(options.model);

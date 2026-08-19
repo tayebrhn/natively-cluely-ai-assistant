@@ -601,9 +601,7 @@ describe('OpenCode (no client getter) is refused at the boundary when switched o
     );
   });
 
-  test('the screenshots scope is enforced for OpenCode too (text-only v1 → images denied)', () => {
-    // OpenCode is text-only in v1: it is not a vision destination, so a caller
-    // that mistakenly hands it screenshots must be blocked before transport.
+  test('the screenshots scope is enforced before OpenCode image serialization', () => {
     setScopes({ screenshots: false });
     const { h } = helper();
     assert.throws(

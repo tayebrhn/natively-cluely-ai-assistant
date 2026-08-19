@@ -315,24 +315,22 @@ export function routeLLMProviders(options: ProviderRouteOptions): ProviderAttemp
         unavailableReason: 'missing_config',
         supports: ['chat', 'stream_chat', 'structured', 'vision'],
     };
-    // OpenCode (client of the user's own `opencode serve`) is text-only in v1 —
-    // no vision declared, so it stays out of the multimodal/screenshot chain
-    // exactly like DeepSeek. 'missing_config' because it's unavailable until the
-    // user configures a reachable server URL (not an API key).
+    // OpenCode accepts image file parts and relays them to the configured model.
+    // The upstream model remains responsible for actual vision capability.
     const opencode: ProviderSpec = {
         provider: 'opencode',
         name: `OpenCode (${models.opencode ?? 'default'})`,
         model: models.opencode,
         available: Boolean(availability.hasOpencode),
         unavailableReason: 'missing_config',
-        supports: ['chat', 'stream_chat', 'structured'],
+        supports: ['chat', 'stream_chat', 'structured', 'vision'],
     };
 
     // DeepSeek is placed after Claude in the text-only chain (between the existing
     // cloud chat providers and the local Ollama fallback) and is omitted from the
     // multimodal chain since no DeepSeek vision model is supported.
     const orderedSpecs: ProviderSpec[] = options.multimodal
-        ? [natively, codex, openai, geminiFlash, claude, geminiPro, groq]
+        ? [natively, codex, opencode, openai, geminiFlash, claude, geminiPro, groq]
         : [natively, groq, codex, geminiFlash, geminiPro, openai, claude, deepseek, opencode];
 
     if (availability.hasOllama) {

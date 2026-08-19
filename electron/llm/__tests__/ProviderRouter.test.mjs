@@ -41,8 +41,7 @@ test('routeLLMProviders returns deterministic text fallback order with availabil
     },
   });
 
-  // OpenCode is the text-only tail of the chain (after DeepSeek), mirroring how
-  // it is appended in orderedSpecs. It is intentionally absent from multimodal.
+  // OpenCode remains the text-only tail of the chain after DeepSeek.
   assert.deepEqual(attempts.map(attempt => attempt.provider), [
     'natively',
     'groq',
@@ -77,7 +76,7 @@ test('routeLLMProviders omits DeepSeek from multimodal fallback (text-only provi
     'DeepSeek must not appear in the multimodal/vision fallback chain');
 });
 
-test('routeLLMProviders omits OpenCode from multimodal fallback (text-only in v1)', async () => {
+test('routeLLMProviders includes OpenCode in multimodal fallback', async () => {
   const attempts = await route({
     capability: 'chat',
     multimodal: true,
@@ -93,8 +92,9 @@ test('routeLLMProviders omits OpenCode from multimodal fallback (text-only in v1
     },
   });
 
-  assert.equal(attempts.find(a => a.provider === 'opencode'), undefined,
-    'OpenCode is text-only in v1 and must not appear in the multimodal/vision fallback chain');
+  const opencode = attempts.find(a => a.provider === 'opencode');
+  assert.ok(opencode, 'OpenCode accepts image file parts and must appear in the vision chain');
+  assert.equal(opencode.status, 'available');
 });
 
 test('routeLLMProviders marks OpenCode available when configured, missing_config otherwise', async () => {
@@ -150,6 +150,7 @@ test('routeLLMProviders returns multimodal fallback order', async () => {
   assert.deepEqual(attempts.map(attempt => attempt.provider), [
     'natively',
     'codex',
+    'opencode',
     'openai',
     'gemini_flash',
     'claude',

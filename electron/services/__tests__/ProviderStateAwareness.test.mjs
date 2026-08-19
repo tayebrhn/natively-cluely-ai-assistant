@@ -157,8 +157,18 @@ describe('OpenCode availability is not-disabled + enabled + a configured base UR
     assert.match(generate, /if\s*\(!this\.isOpenCodeAvailable\(\)\)\s*throw new Error\('OpenCode transport is disabled or not configured\.'\)/);
     assert.match(stream, /if\s*\(!this\.isOpenCodeAvailable\(\)\)\s*throw new Error\('OpenCode transport is disabled or not configured\.'\)/);
     // The outbound-scope boundary must run BEFORE any byte reaches the server.
-    assert.match(generate, /this\.assertOutboundScopes\('opencode', userContent\)/, 'generateWithOpenCode must assert the outbound boundary');
-    assert.match(stream, /this\.assertOutboundScopes\('opencode', userContent\)/, 'streamWithOpenCode must assert the outbound boundary');
+    assert.match(generate, /this\.assertOutboundScopes\('opencode', userContent, imagePaths\)/, 'generateWithOpenCode must assert text and screenshot scopes');
+    assert.match(stream, /this\.assertOutboundScopes\('opencode', userContent, imagePaths\)/, 'streamWithOpenCode must assert text and screenshot scopes');
+  });
+
+  test('OpenCode is seated in the unified vision chain and explicit selection moves it first', () => {
+    const source = read('electron/LLMHelper.ts');
+    const start = source.indexOf('private async *streamVisionWithFallback');
+    const block = source.slice(start, start + 9000);
+    assert.match(block, /id:\s*'opencode'[\s\S]*?streamWithOpenCode\(userContent, systemPrompt, false, imagePaths, sig\)/,
+      'the unified screenshot path must pass image paths to OpenCode');
+    assert.match(block, /isOpenCodeCliModel\(this\.currentModelId\)[\s\S]*?cloud\.find\(p => p\.id === 'opencode'\)[\s\S]*?front\.push\(oc\)/,
+      'an explicitly selected OpenCode model must lead the vision fallback order');
   });
 });
 

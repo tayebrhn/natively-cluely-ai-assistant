@@ -289,6 +289,35 @@ test('run: task instructions retain system priority instead of becoming user con
   }
 });
 
+test('run: serializes optimized images as OpenCode file parts while keeping tools disabled', async () => {
+  const stub = installFetch((call) => {
+    if (call.url === `${BASE}/session` && call.method === 'POST') return jsonResponse({ id: 's-image' });
+    if (call.url === `${BASE}/session/s-image/message`) return jsonResponse({ parts: [{ type: 'text', text: 'I see two images.' }] });
+    if (call.method === 'DELETE') return jsonResponse({ ok: true });
+    throw new Error(`unexpected ${call.method} ${call.url}`);
+  });
+  try {
+    await OpenCodeService.run('', {
+      prompt: 'explain',
+      baseUrl: BASE,
+      timeoutMs: 5_000,
+      images: [
+        { mime: 'image/jpeg', filename: 'first.jpg', url: 'data:image/jpeg;base64,Zmlyc3Q=' },
+        { mime: 'image/png', filename: 'second.png', url: 'data:image/png;base64,c2Vjb25k' },
+      ],
+    });
+    const body = JSON.parse(stub.calls.find(c => c.url === `${BASE}/session/s-image/message`).body);
+    assert.deepEqual(body.parts, [
+      { type: 'text', text: 'explain' },
+      { type: 'file', mime: 'image/jpeg', filename: 'first.jpg', url: 'data:image/jpeg;base64,Zmlyc3Q=' },
+      { type: 'file', mime: 'image/png', filename: 'second.png', url: 'data:image/png;base64,c2Vjb25k' },
+    ]);
+    assert.deepEqual(body.tools, { '*': false }, 'image input must not re-enable coding tools');
+  } finally {
+    stub.restore();
+  }
+});
+
 // =============================================================================
 // Basic-auth header
 // =============================================================================

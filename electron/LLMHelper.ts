@@ -1597,8 +1597,8 @@ export class LLMHelper {
   // prompt to the user's opencode server, which relays to whatever upstream
   // (OpenAI/Anthropic/etc.) they configured there. So it takes the same
   // local-only gate and assertOutboundScopes() every network provider takes.
-  // v1 is TEXT-ONLY: no imagePaths parameter, and it is deliberately absent
-  // from every vision dispatch site (visionPolicy.ts / VisionProviderRegistry).
+  // Image parts are supported when the model selected inside OpenCode accepts
+  // vision input. OpenCode remains a cloud-class destination for privacy.
   private getOpenCodePassword(): string | undefined {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
@@ -1608,14 +1608,31 @@ export class LLMHelper {
     }
   }
 
-  private async generateWithOpenCode(userContent: string, systemPrompt?: string, fastMode = false, signal?: AbortSignal): Promise<string> {
+  private async prepareOpenCodeImages(imagePaths?: string[]): Promise<Array<{ mime: string; url: string; filename?: string }>> {
+    if (!imagePaths?.length) return [];
+    const optimizer = getImageOptimizer();
+    const images: Array<{ mime: string; url: string; filename?: string }> = [];
+    for (const imagePath of imagePaths) {
+      const optimized = await optimizer.optimize(imagePath, {
+        profile: 'balanced',
+        provider: 'generic',
+        cacheKey: imagePath,
+      });
+      images.push({
+        mime: optimized.mimeType,
+        url: await optimizer.getDataUrl(optimized),
+        filename: `screenshot.${optimized.mimeType === 'image/jpeg' ? 'jpg' : optimized.mimeType.split('/')[1]}`,
+      });
+    }
+    return images;
+  }
+
+  private async generateWithOpenCode(userContent: string, systemPrompt?: string, fastMode = false, imagePaths?: string[], signal?: AbortSignal): Promise<string> {
     if (!this.isOpenCodeAvailable()) throw new Error('OpenCode transport is disabled or not configured.');
     if (this.isLocalOnlyMode) throw new Error("Cloud providers disabled in local-only mode");
-    // Text-only: no imagePaths. The scope check still runs so a future caller
-    // that wires images through this provider trips the boundary instead of
-    // silently leaking a screenshot to the user's opencode server.
-    this.assertOutboundScopes('opencode', userContent);
+    this.assertOutboundScopes('opencode', userContent, imagePaths);
     const model = this.getSelectedOpenCodeModel(fastMode);
+    const images = await this.prepareOpenCodeImages(imagePaths);
     return OpenCodeService.run('', {
       prompt: userContent,
       instructions: systemPrompt,
@@ -1623,18 +1640,20 @@ export class LLMHelper {
       username: this.openCodeConfig.username,
       password: this.getOpenCodePassword(),
       model,
+      images,
       timeoutMs: this.openCodeConfig.timeoutMs,
       signal,
     });
   }
 
-  private async *streamWithOpenCode(userContent: string, systemPrompt?: string, fastMode = false, signal?: AbortSignal): AsyncGenerator<string, void, unknown> {
+  private async *streamWithOpenCode(userContent: string, systemPrompt?: string, fastMode = false, imagePaths?: string[], signal?: AbortSignal): AsyncGenerator<string, void, unknown> {
     if (!this.isOpenCodeAvailable()) throw new Error('OpenCode transport is disabled or not configured.');
     if (this.isLocalOnlyMode) throw new Error("Cloud providers disabled in local-only mode");
     // Generator: the scope check runs on first next(), still strictly before any
     // byte reaches OpenCodeService.stream. See generateWithOpenCode.
-    this.assertOutboundScopes('opencode', userContent);
+    this.assertOutboundScopes('opencode', userContent, imagePaths);
     const model = this.getSelectedOpenCodeModel(fastMode);
+    const images = await this.prepareOpenCodeImages(imagePaths);
     yield* OpenCodeService.stream('', {
       prompt: userContent,
       instructions: systemPrompt,
@@ -1642,6 +1661,7 @@ export class LLMHelper {
       username: this.openCodeConfig.username,
       password: this.getOpenCodePassword(),
       model,
+      images,
       timeoutMs: this.openCodeConfig.timeoutMs,
       signal,
     });
@@ -3071,7 +3091,7 @@ let isMultimodal = !!(imagePaths?.length);
       }
 
       if (this.isOpenCodeCliModel(this.currentModelId) && this.isOpenCodeAvailable()) {
-        return await this.generateWithOpenCode(cloudUserContent, openaiSystemPrompt, false);
+        return await this.generateWithOpenCode(cloudUserContent, openaiSystemPrompt, false, cloudImagePaths);
       }
 
       // `custom` is the family id the Providers panel's "Disable custom
@@ -3217,8 +3237,7 @@ let isMultimodal = !!(imagePaths?.length);
             providers.push({ name: routedProvider.name, execute: () => this.generateWithCodexCli(cloudUserContent, openaiSystemPrompt, false, cloudIsMultimodal ? cloudImagePaths : undefined) });
             break;
           case 'opencode':
-            // Text-only: no image argument, unlike codex above.
-            providers.push({ name: routedProvider.name, execute: () => this.generateWithOpenCode(cloudUserContent, openaiSystemPrompt, false) });
+            providers.push({ name: routedProvider.name, execute: () => this.generateWithOpenCode(cloudUserContent, openaiSystemPrompt, false, cloudIsMultimodal ? cloudImagePaths : undefined) });
             break;
           case 'gemini_flash':
             providers.push({ name: routedProvider.name, execute: () => this.tryGenerateResponse(cloudCombinedMessages.gemini, cloudIsMultimodal ? cloudImagePaths : undefined, routedProvider.model || textGeminiFlash) });
@@ -4834,6 +4853,9 @@ let isMultimodal = !!(imagePaths?.length);
       if (this.isCodexAvailable()) {
         providers.push({ name: `Codex CLI (${this.codexCliConfig.model})`, execute: () => this.streamWithCodexCli(userContent, openaiSystemPrompt, false, imagePaths, abortSignal) });
       }
+      if (this.isOpenCodeAvailable()) {
+        providers.push({ name: `OpenCode (${this.openCodeConfig.model || 'default'})`, execute: () => this.streamWithOpenCode(userContent, openaiSystemPrompt, false, imagePaths, abortSignal) });
+      }
       if (this.openaiClient) {
         providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenaiMultimodal(userContent, imagePaths!, openaiSystemPrompt, textOpenAI, abortSignal) });
       }
@@ -4865,10 +4887,8 @@ let isMultimodal = !!(imagePaths?.length);
       if (this.isCodexAvailable()) {
         providers.push({ name: `Codex CLI (${this.codexCliConfig.model})`, execute: () => this.streamWithCodexCli(userContent, openaiSystemPrompt, false, undefined, abortSignal) });
       }
-      // OpenCode is text-only in v1, so it lives ONLY in this text-only branch
-      // (deliberately absent from the multimodal branch above).
       if (this.isOpenCodeAvailable()) {
-        providers.push({ name: `OpenCode (${this.openCodeConfig.model || 'default'})`, execute: () => this.streamWithOpenCode(userContent, openaiSystemPrompt, false, abortSignal) });
+        providers.push({ name: `OpenCode (${this.openCodeConfig.model || 'default'})`, execute: () => this.streamWithOpenCode(userContent, openaiSystemPrompt, false, undefined, abortSignal) });
       }
       if (this.openaiClient) {
         providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenai(userContent, openaiSystemPrompt, textOpenAI, abortSignal) });
@@ -5106,6 +5126,10 @@ let isMultimodal = !!(imagePaths?.length);
         cloud.push({ id: 'codex-cli', name: `Codex CLI (${this.codexCliConfig.model})`, isLocal: false, priority: prio++, ttftTimeoutMs: PRO_TTFT_MS,
           open: (sig) => this.streamWithCodexCli(userContent, systemPrompt, false, imagePaths, sig) });
       }
+      if (this.isOpenCodeAvailable()) {
+        cloud.push({ id: 'opencode', name: `OpenCode (${this.openCodeConfig.model || 'default'})`, isLocal: false, priority: prio++, ttftTimeoutMs: PRO_TTFT_MS,
+          open: (sig) => this.streamWithOpenCode(userContent, systemPrompt, false, imagePaths, sig) });
+      }
     }
 
     // Local providers (always available, including in local-only mode).
@@ -5147,13 +5171,14 @@ let isMultimodal = !!(imagePaths?.length);
       if (this.useOllama) { const o = local.find(p => p.id === 'ollama'); if (o) front.push(o); }
       if (this.customProvider) { const c = local.find(p => p.id === 'custom'); if (c) front.push(c); }
       if (this.isCodexCliModel(this.currentModelId)) { const cdx = cloud.find(p => p.id === 'codex-cli'); if (cdx) front.push(cdx); }
+      if (this.isOpenCodeCliModel(this.currentModelId)) { const oc = cloud.find(p => p.id === 'opencode'); if (oc) front.push(oc); }
       const backLocal = local.filter(p => !front.includes(p));
       const backCloud = cloud.filter(p => !front.includes(p));
       ordered = [...front, ...orderVisionByHealth(backCloud, this.visionHealth, nowMs), ...backLocal];
     }
 
     if (ordered.length === 0) {
-      throw new Error('No vision-capable provider configured. Add an API key (OpenAI, Claude, Gemini, or Groq) or enable a vision-capable Ollama model in Settings.');
+      throw new Error('No vision-capable provider configured. Add an API key, enable OpenCode with a vision-capable model, or enable a vision-capable Ollama model in Settings.');
     }
 
     // Delegate the first-token-commit + retry + circuit-breaker state machine.
@@ -6418,7 +6443,7 @@ let isMultimodal = !!(imagePaths?.length);
         // chain commits to a provider it yields tokens and won't throw here.
         console.error('[LLMHelper] Vision fallback chain exhausted:', visionErr?.message || visionErr);
         if (!visionYielded && !abortSignal?.aborted) {
-          yield "I couldn't read the screen just now — all vision models are unavailable. Check your API keys (OpenAI, Claude, Gemini, or Groq) in Settings, or try again in a moment.";
+          yield "I couldn't read the screen just now — all vision models are unavailable. Check your provider settings, including whether OpenCode is using a vision-capable model, or try again in a moment.";
         }
       }
       return;
@@ -6450,7 +6475,7 @@ let isMultimodal = !!(imagePaths?.length);
       if (this.isOpenCodeAvailable()) {
         console.log(`[LLMHelper] ⚡️ Fast Text Mode Active (Streaming). Routing to OpenCode...`);
         try {
-          yield* this.streamWithOpenCode(userContent, finalSystemPrompt, true, abortSignal);
+          yield* this.streamWithOpenCode(userContent, finalSystemPrompt, true, undefined, abortSignal);
           return;
         } catch (e: any) {
           console.warn("[LLMHelper] OpenCode Fast Text streaming failed, falling back:", e.message);
@@ -6502,7 +6527,7 @@ let isMultimodal = !!(imagePaths?.length);
 
     if (this.isOpenCodeCliModel(this.currentModelId) && this.isOpenCodeAvailable()) {
       // Text-only: imagePaths deliberately not forwarded.
-      yield* this.streamWithOpenCode(userContent, finalSystemPrompt, false, abortSignal);
+      yield* this.streamWithOpenCode(userContent, finalSystemPrompt, false, undefined, abortSignal);
       return;
     }
 
@@ -8811,7 +8836,7 @@ let isMultimodal = !!(imagePaths?.length);
       }
     }
 
-    // ATTEMPT 2b: OpenCode (if user has it enabled and configured — text-only path)
+    // ATTEMPT 2b: OpenCode (if user has it enabled and configured)
     if (this.isOpenCodeAvailable()) {
       console.log(`[LLMHelper] Attempting OpenCode for summary...`);
       try {
