@@ -274,6 +274,7 @@ const App: React.FC = () => {
   const [isPremiumActive, setIsPremiumActive] = useState(false);
   const [hasLoadedLicense, setHasLoadedLicense] = useState(false);
   const [planDetails, setPlanDetails] = useState<{ isPremium: boolean; plan?: string; provider?: string }>({ isPremium: false });
+  const [devProOverrideActive, setDevProOverrideActive] = useState(false);
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
@@ -538,6 +539,10 @@ const App: React.FC = () => {
 
     // Basic status check for campaign targeting
     window.electronAPI?.profileGetStatus?.().then(s => setHasProfile(s?.hasProfile || false)).catch(() => {});
+    // Deliberately not persisted: remind developers on every fresh renderer launch.
+    window.electronAPI?.licenseGetDevProOverrideStatus?.()
+      .then(status => setDevProOverrideActive(status?.enabled === true && status?.packaged === false))
+      .catch(() => setDevProOverrideActive(false));
     // Load full plan details for targeted ad delivery (plan tier + provider).
     window.electronAPI?.licenseGetDetails?.()
       .then(details => {
@@ -1173,6 +1178,19 @@ const App: React.FC = () => {
       <div data-opacity-preview-surface="">
         {!isolateGlobalSurfaces && <UpdateBanner />}
         {!isolateGlobalSurfaces && <NativelyQuotaBanner />}
+
+        {devProOverrideActive && (isLauncherWindow || isDefault) && (
+          <div className="fixed left-1/2 top-3 z-[100] flex -translate-x-1/2 items-center gap-3 border border-amber-400/40 bg-amber-950/95 px-3 py-2 text-[12px] text-amber-100 shadow-lg">
+            <span>Development Pro override active. No real subscription is being checked.</span>
+            <button
+              type="button"
+              className="text-amber-300 underline underline-offset-2 hover:text-amber-100"
+              onClick={() => openSettingsExclusive('plans')}
+            >
+              View plans
+            </button>
+          </div>
+        )}
 
         {/* Orchestrated onboarding toasters (single-slot, controlled by OnboardingOrchestrator) */}
         {!isolateOnboarding && (

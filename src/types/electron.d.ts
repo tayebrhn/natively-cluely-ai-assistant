@@ -601,6 +601,7 @@ export interface ElectronAPI {
   licenseGetDetails: () => Promise<{ isPremium: boolean; plan?: string; provider?: string }>
   /** Async startup check — calls Dodo validate endpoint to detect server-side revocations. */
   licenseCheckPremiumAsync: () => Promise<boolean>
+  licenseGetDevProOverrideStatus: () => Promise<{ enabled: boolean; packaged: boolean; environment: 'development' | 'test' | 'production' }>
   onLicenseStatusChanged: (callback: (data: { isPremium: boolean, plan?: string }) => void) => () => void
   licenseDeactivate: () => Promise<void>
   licenseGetHardwareId: () => Promise<string>

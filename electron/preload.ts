@@ -2569,6 +2569,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   licenseCheckPremium: () => ipcRenderer.invoke('license:check-premium'),
   licenseGetDetails: () => ipcRenderer.invoke('license:get-details'),
   licenseCheckPremiumAsync: () => ipcRenderer.invoke('license:check-premium-async'),
+  licenseGetDevProOverrideStatus: () => ipcRenderer.invoke('license:get-dev-pro-override-status'),
   licenseDeactivate: () => ipcRenderer.invoke('license:deactivate'),
   licenseGetHardwareId: () => ipcRenderer.invoke('license:get-hardware-id'),
   onLicenseStatusChanged: (callback: (data: { isPremium: boolean; plan?: string }) => void) => {

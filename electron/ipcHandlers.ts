@@ -19,6 +19,7 @@ import type { BrowserContextCategory, SafeWebsiteMetadata } from './services/bro
 import { SettingsManager } from './services/SettingsManager';
 import { ProviderStatusRegistry } from './services/ProviderStatusRegistry';
 import { SkillsManager } from './services/SkillsManager';
+import { getDevProOverrideStatus, isDevProOverrideEnabled } from './services/dev/devProOverride';
 import { SAFE_DOCUMENT_EXTENSIONS } from './services/SafeDocumentTextExtractor';
 import { DEFAULT_BUILTIN_SKILL_IDS, type SkillUploadPayload } from './services/skills/SkillValidator';
 
@@ -341,6 +342,12 @@ export function initializeIpcHandlers(appState: AppState): void {
    * Used to gate profile intelligence features (resume upload, JD upload, company research, etc.).
    */
   const isProOrTrialActive = (): boolean => {
+    if (isDevProOverrideEnabled({
+      isPackaged: app.isPackaged,
+      nodeEnv: process.env.NODE_ENV,
+      flagValue: process.env.NATIVELY_DEV_PRO_OVERRIDE,
+    })) return true;
+
     // 1. Full premium license (Dodo / Gumroad / Natively API subscription)
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
@@ -451,6 +458,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
   safeHandle('license:check-premium', async () => {
+    if (getDevProOverrideStatus().enabled) return true;
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
       return LicenseManager.getInstance().isPremium();
@@ -460,6 +468,9 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle('license:get-details', async () => {
+    if (getDevProOverrideStatus().enabled) {
+      return { isPremium: true, plan: 'development', provider: 'development' };
+    }
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
       return LicenseManager.getInstance().getLicenseDetails();
@@ -471,6 +482,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   // Returns false only if the server definitively revokes the key.
   // Network errors fail-open (returns cached sync result).
   safeHandle('license:check-premium-async', async () => {
+    if (getDevProOverrideStatus().enabled) return true;
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
       return await LicenseManager.getInstance().isPremiumAsync();
@@ -478,6 +490,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       return false;
     }
   });
+  safeHandle('license:get-dev-pro-override-status', async () => getDevProOverrideStatus());
   safeHandle('license:deactivate', async () => {
     try {
       const { LicenseManager } = require('../premium/electron/services/LicenseManager');
