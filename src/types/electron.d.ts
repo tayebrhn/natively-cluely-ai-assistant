@@ -311,6 +311,7 @@ export interface ElectronAPI {
   e2eInvoke: (channel: string, ...args: any[]) => Promise<any>
   modesUpdate: (id: string, updates: { name?: string; templateType?: string; customContext?: string; sourceContract?: any }) => Promise<{ success: boolean; error?: string }>
   modesGetSourceContract: (modeId: string) => Promise<any>
+  modesBuildUserSourceContract: (input: { modeId: string; templateType: string; switches: string[]; hasLiveTranscriptCapable?: boolean }) => Promise<any>
   modesDelete: (id: string) => Promise<{ success: boolean; error?: string }>
   modesSetActive: (id: string | null) => Promise<{ success: boolean; error?: string }>
   modesGetReferenceFiles: (modeId: string) => Promise<Array<{ id: string; modeId: string; fileName: string; content: string; createdAt: string }>>
