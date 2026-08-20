@@ -112,6 +112,26 @@ describe('ModesManager.updateMode — re-seed sourceContract on templateType cha
     assert.equal(afterSwitch.seededForTemplateType, 'general');
   });
 
+  test('activation repairs a stale reference-file contract on a profile-enabled mode', () => {
+    if (!dbMgr.isAvailable()) return;
+
+    const created = mgr.createMode({ name: 'Interview profile', templateType: 'technical-interview' });
+    const staleContract = mgr.buildUserSourceContract({
+      modeId: created.id,
+      templateType: 'general',
+      switches: ['reference_files'],
+    });
+    mgr.updateMode(created.id, { sourceContract: staleContract });
+    assert.equal(mgr.getOrMigrateSourceContract(created.id).sourceAuthority, 'reference_files_primary');
+
+    mgr.setActiveMode(created.id);
+
+    const repaired = mgr.getActiveModeInfo().sourceContract;
+    assert.equal(repaired.sourceAuthority, 'profile_plus_transcript');
+    assert.equal(repaired.defaultOwner, 'profile');
+    assert.deepEqual(repaired.allowedExplicitSwitches, ['profile', 'job_description']);
+  });
+
   test('user_selected contract is NEVER overwritten by a template switch', () => {
     if (!dbMgr.isAvailable()) return;
 

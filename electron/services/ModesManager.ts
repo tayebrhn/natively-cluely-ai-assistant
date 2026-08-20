@@ -492,6 +492,20 @@ export class ModesManager {
         if (store.valid) return store.info;
         const mode = this.getActiveMode();
         if (mode) {
+            const isProfileTemplate = mode.templateType === 'looking-for-work'
+                || mode.templateType === 'technical-interview';
+            const authority = mode.sourceContract?.sourceAuthority;
+            if (isProfileTemplate && authority !== 'profile_only' && authority !== 'profile_plus_transcript') {
+                this.updateMode(mode.id, {
+                    sourceContract: this.buildUserSourceContract({
+                        modeId: mode.id,
+                        templateType: mode.templateType,
+                        switches: ['profile', 'job_description'],
+                        hasLiveTranscriptCapable: true,
+                    }),
+                });
+                return this.getActiveModeInfo();
+            }
             const grounding = this.getActiveModeDocumentGroundingInfo(mode.id);
             store.info = {
                 id: mode.id,
@@ -796,6 +810,30 @@ export class ModesManager {
         if (id === PROFILE_OKF_RESERVED_MODE_ID) {
             console.warn('[ModesManager] setActiveMode: refusing to activate the reserved profile OKF mode');
             return;
+        }
+
+        // Canonical self-heal for profile-enabled templates. Older modes could
+        // retain a reference-file contract after a template change, making a
+        // loaded resume look unavailable even after selecting a profile mode.
+        // Activation is the final write boundary, so repair before the next
+        // answer is planned, including direct IPC callers and old persisted modes.
+        if (id !== null) {
+            const target = this.getModes().find((mode) => mode.id === id);
+            const isProfileTemplate = target?.templateType === 'looking-for-work'
+                || target?.templateType === 'technical-interview';
+            const authority = target?.sourceContract?.sourceAuthority;
+            const profileContractIsMissing = authority !== 'profile_only'
+                && authority !== 'profile_plus_transcript';
+            if (target && isProfileTemplate && profileContractIsMissing) {
+                this.updateMode(id, {
+                    sourceContract: this.buildUserSourceContract({
+                        modeId: id,
+                        templateType: target.templateType,
+                        switches: ['profile', 'job_description'],
+                        hasLiveTranscriptCapable: true,
+                    }),
+                });
+            }
         }
         DatabaseManager.getInstance().setActiveMode(id);
         this.invalidateActiveModeCache();
