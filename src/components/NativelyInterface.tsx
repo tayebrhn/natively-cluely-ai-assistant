@@ -159,6 +159,27 @@ const displayLanguageName = (lang: string): string =>
 // split-position version (label at one offset, button at another) read as
 // disjointed floating chrome; grouping them into a single translucent
 // surface with one hover fade gives it a calmer, more cohesive feel.
+// Copy `text` to the clipboard via Electron's main-process clipboard, which —
+// unlike the async navigator.clipboard API — has NO document-focus requirement.
+// The overlay window is intentionally never focused on Windows
+// (WS_EX_NOACTIVATE stealth policy), so navigator.clipboard.writeText() throws
+// "Document is not focused" there and Copy silently failed. Falls back to the
+// DOM clipboard only when the IPC bridge is unavailable (non-Electron context).
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    const res = await window.electronAPI?.writeClipboard?.(text);
+    if (res?.success) return true;
+  } catch {
+    /* fall through to the DOM clipboard */
+  }
+  try {
+    await navigator.clipboard?.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const CodeBlockChrome = ({ lang, code }: { lang: string; code: string }) => {
   const t = useT();
   const [copied, setCopied] = useState(false);
@@ -167,13 +188,12 @@ const CodeBlockChrome = ({ lang, code }: { lang: string; code: string }) => {
     if (timer.current) clearTimeout(timer.current);
   }, []);
   const handleCopy = () => {
-    const p = navigator.clipboard?.writeText(code);
-    if (!p) return;
-    p.then(() => {
+    copyTextToClipboard(code).then((ok) => {
+      if (!ok) return;
       setCopied(true);
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
+    });
   };
   return (
     <div
@@ -4846,7 +4866,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({
   // (memoized below) receives this as a prop; without a stable identity its
   // memo comparator would never match and the bailout would not fire.
   const handleCopy = useCallback((text: string) => {
-    navigator.clipboard.writeText(text);
+    void copyTextToClipboard(text);
     analytics.trackCopyAnswer();
     // Optional: Trigger a small toast or state change for visual feedback
   }, []);
@@ -7470,9 +7490,8 @@ Provide only the answer, nothing else.`;
     ]
       .filter(Boolean)
       .join('\n');
-    try {
-      await navigator.clipboard.writeText(report);
-    } catch {
+    const ok = await copyTextToClipboard(report);
+    if (!ok) {
       const ta = document.createElement('textarea');
       ta.value = report;
       document.body.appendChild(ta);

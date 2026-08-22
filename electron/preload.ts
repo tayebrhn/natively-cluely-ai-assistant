@@ -697,6 +697,9 @@ interface ElectronAPI {
   toggleOverlayMousePassthrough: () => Promise<{ success: boolean; enabled: boolean }>;
   getOverlayMousePassthrough: () => Promise<boolean>;
   onOverlayMousePassthroughChanged: (callback: (enabled: boolean) => void) => () => void;
+  // Focus-independent clipboard write (main process). navigator.clipboard
+  // throws "Document is not focused" in the never-focused stealth overlay.
+  writeClipboard: (text: string) => Promise<{ success: boolean }>;
 
   // Streaming listeners
   streamGeminiChat: (
@@ -1402,6 +1405,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('set-overlay-mouse-passthrough', enabled),
   toggleOverlayMousePassthrough: () => ipcRenderer.invoke('toggle-overlay-mouse-passthrough'),
   getOverlayMousePassthrough: () => ipcRenderer.invoke('get-overlay-mouse-passthrough'),
+  writeClipboard: (text: string) => ipcRenderer.invoke('clipboard-write-text', text),
   setOpenAtLogin: (open: boolean) => ipcRenderer.invoke('set-open-at-login', open),
   getOpenAtLogin: () => ipcRenderer.invoke('get-open-at-login'),
   setDisguise: (mode: 'terminal' | 'settings' | 'activity' | 'none') =>

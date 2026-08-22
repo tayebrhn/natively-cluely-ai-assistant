@@ -1,7 +1,7 @@
 // ipcHandlers.ts
 
 import * as crypto from 'crypto';
-import { app, BrowserWindow, dialog, desktopCapturer, ipcMain, shell, systemPreferences } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, desktopCapturer, ipcMain, shell, systemPreferences } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -663,6 +663,17 @@ export function initializeIpcHandlers(appState: AppState): void {
     if (!overlayWin || overlayWin.isDestroyed()) return;
     if (overlayWin.webContents.id !== event.sender.id) return;
     appState.getWindowHelper().setOverlayHoverInteractive(!!interactive);
+  });
+
+  // Focus-independent clipboard write. The overlay (and other stealth windows)
+  // are intentionally never focused on Windows (WS_EX_NOACTIVATE), and the async
+  // navigator.clipboard.writeText() API throws "Document is not focused" on an
+  // unfocused document — so Copy silently failed in the overlay. Electron's
+  // main-process clipboard has no focus requirement.
+  safeHandle('clipboard-write-text', async (_event, text: string) => {
+    if (typeof text !== 'string') return { success: false };
+    clipboard.writeText(text);
+    return { success: true };
   });
 
 
