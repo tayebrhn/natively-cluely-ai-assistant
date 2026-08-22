@@ -2290,6 +2290,17 @@ export class WindowHelper {
         if (!inactive) this.overlayWindow.focus();
       }
       this.isWindowVisible = true;
+
+      // Re-arm interactivity on every overlay entry. showInactive() (used for
+      // ghost/inactive shows that preserve stealth focus) does NOT emit the
+      // 'show' event on Windows, so the on('show') re-arm is skipped on meeting
+      // re-entry — leaving the reused overlay window in a stale click-through
+      // state (setIgnoreMouseEvents(true) latched from the prior session),
+      // which makes the overlay toggles visible but unclickable until a full
+      // app restart rebuilds the window. Mirror the on('show') handler here so
+      // the policy is re-armed regardless of whether 'show' fires.
+      this.overlayHoverInteractive = true;
+      this.syncOverlayInteractionPolicy(true);
     }
 
     // Hide Launcher SECOND
